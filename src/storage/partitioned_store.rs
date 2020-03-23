@@ -511,7 +511,7 @@ mod tests {
 
     /// Given a vector of optional values, put all the `Some` values in sorted order, leaving the
     /// `None` values interspersed as they are.
-    fn sort_present_values<T: Ord>(d: &mut Vec<Option<T>>) {
+    fn sort_and_dedup_present_values<T: Ord>(d: &mut Vec<Option<T>>) {
         let mut values = vec![];
         let mut indices = vec![];
 
@@ -524,6 +524,11 @@ mod tests {
 
         values.sort();
 
+        // Remove duplicates because this is an invariant upheld by the input streams. If this
+        // assumption changes, this code should be updated.
+        // Duplicates will become `None` values.
+        values.dedup();
+
         for (v, i) in values.into_iter().zip(indices) {
             d[i] = Some(v);
         }
@@ -534,7 +539,7 @@ mod tests {
     fn arb_proto_stream<T: Arbitrary + Ord + Clone>() -> impl Strategy<Value = ProtoStream<T>> {
         // Generate a vector of optional values
         any::<Vec<Option<T>>>().prop_map(|mut v| {
-            sort_present_values(&mut v);
+            sort_and_dedup_present_values(&mut v);
 
             // `original` will contain the sorted present values only
             let original = v.clone().into_iter().flatten().collect();
