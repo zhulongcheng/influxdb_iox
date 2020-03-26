@@ -534,8 +534,7 @@ mod tests {
         }
     }
 
-    /// Adds an arbitrary number of `Poll::Pending` values throughout the `Poll::Ready(Some(T))`
-    /// values returned by the stream.
+    /// Generates an arbitrary stream of `Poll::Ready(T)` or `Poll::Pending` values.
     fn arb_proto_stream<T: Arbitrary + Ord + Clone>() -> impl Strategy<Value = ProtoStream<T>> {
         // Generate a vector of optional values
         any::<Vec<Option<T>>>().prop_map(|mut v| {
@@ -558,6 +557,7 @@ mod tests {
         })
     }
 
+    /// Generates an arbitrary `ReadValues` value.
     fn arb_read_values_strategy() -> impl Strategy<Value = ReadValues> {
         prop_oneof![
             any::<Vec<(i64, i64)>>().prop_map(|points_and_times| {
@@ -579,6 +579,8 @@ mod tests {
         ]
     }
 
+    /// Generates either `None` or `Some(ReadBatch)` where the `ReadBatch` contains an arbitrary
+    /// `key` and an arbitrary `ReadValues` value.
     fn arb_maybe_read_batch() -> impl Strategy<Value = Option<ReadBatch>> {
         proptest::option::of(
             (any::<String>(), arb_read_values_strategy())
@@ -586,6 +588,8 @@ mod tests {
         )
     }
 
+    /// Generates an arbitrary stream of `ReadBatch` values. Can't use `arb_proto_stream<ReadBatch>`
+    /// because `ReadValues::F64` doesn't implement `Ord`.
     fn arb_proto_stream_of_read_merge_strings() -> impl Strategy<Value = ProtoStream<ReadBatch>> {
         prop::collection::vec(arb_maybe_read_batch(), 0..100).prop_map(|mut d| {
             let mut values = vec![];
@@ -645,6 +649,9 @@ mod tests {
         }
     }
 
+    /// Creates a `Stream` that returns the given `Poll` values, always returns `Poll::Ready(None)`
+    /// when all the given values have been returned, and panics to fail a test if the stream
+    /// is polled after returning `Poll::Ready(None)`.
     fn stream_test_double<T>(mut poll_values: Vec<Poll<T>>) -> impl Stream<Item = T> {
         // Since we pop off the poll values for implementation
         // simplicity, we reverse them first so the original
