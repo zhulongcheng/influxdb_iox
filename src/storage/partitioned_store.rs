@@ -557,10 +557,10 @@ mod tests {
         })
     }
 
-    /// Generates an arbitrary `ReadValues` value.
+    /// Generates an arbitrary `ReadValues` value, which must not have empty values.
     fn arb_read_values_strategy() -> impl Strategy<Value = ReadValues> {
         prop_oneof![
-            any::<Vec<(i64, i64)>>().prop_map(|points_and_times| {
+            prop::collection::vec(any::<(i64, i64)>(), 1..100).prop_map(|points_and_times| {
                 ReadValues::I64(
                     points_and_times
                         .into_iter()
@@ -568,7 +568,7 @@ mod tests {
                         .collect(),
                 )
             }),
-            any::<Vec<(f64, i64)>>().prop_map(|points_and_times| {
+            prop::collection::vec(any::<(f64, i64)>(), 1..100).prop_map(|points_and_times| {
                 ReadValues::F64(
                     points_and_times
                         .into_iter()
