@@ -444,4 +444,65 @@ mod tests {
         memdb.write(&mut points).unwrap();
         memdb
     }
+
+    use proptest::prelude::*;
+
+    #[derive(Debug, Clone)]
+    struct SeriesBufferReadData<T: Clone> {
+        range: TimestampRange,
+        before: Vec<ReadPoint<T>>,
+        during: Vec<ReadPoint<T>>,
+        after: Vec<ReadPoint<T>>,
+    }
+
+    impl<T: Clone> SeriesBufferReadData<T> {
+        fn series_buffer(&self) -> SeriesBuffer<T> {
+            let mut values: Vec<_> = self
+                .before
+                .iter()
+                .cloned()
+                .chain(self.during.iter().cloned())
+                .chain(self.after.iter().cloned())
+                .collect();
+            values.sort_by_key(|v| v.time);
+            SeriesBuffer { values }
+        }
+    }
+
+    fn arb_read_point_sorted_vec<T: Arbitrary + Clone>(start: Option<i64>, end: Option<i64>) -> impl Strategy<Value = Vec<ReadPoint<T>>> {
+        let start = start.unwrap_or(i64::min_value());
+        let end = end.unwrap_or(i64::max_value());
+
+        prop::collection::vec((any::<T>(), start..end), 0..10).prop_map(|mut v| {
+            v.sort_by_key(|tup| tup.1);
+            v.into_iter().map(|(value, time)| ReadPoint { value, time }).collect()
+        })
+    }
+
+    fn arb_series_buffer<T: Arbitrary + Clone + std::fmt::Debug>() -> impl Strategy<Value = SeriesBufferReadData<T>> {
+        (0..i64::max_value(), 0..i64::max_value()).prop_flat_map(|(a_time, b_time)| {
+            let (start, end) = if a_time < b_time {
+                (a_time, b_time)
+            } else {
+                (b_time, a_time)
+            };
+
+            let range = TimestampRange { start, end };
+            let before = arb_read_point_sorted_vec::<T>(None, Some(start));
+            let during = arb_read_point_sorted_vec::<T>(Some(start), Some(end));
+            let after = arb_read_point_sorted_vec::<T>(Some(end), None);
+
+            (Just(range), before, during, after)
+            }).prop_map(|(range, before, during, after)| SeriesBufferReadData { range, before, during, after })
+
+    }
+
+    proptest! {
+        #[test]
+        fn test_series_buffer_read(a in arb_series_buffer::<i64>()) {
+            let series_buffer = a.series_buffer();
+
+            prop_assert_eq!(series_buffer.read(&a.range), a.during);
+        }
+    }
 }
