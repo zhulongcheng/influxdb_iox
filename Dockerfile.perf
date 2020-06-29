@@ -1,0 +1,15 @@
+FROM rust:slim-buster
+
+RUN groupadd -g 1500 rust \
+  && useradd -u 1500 -g rust -s /bin/bash -m rust \
+  && echo 'rust ALL=NOPASSWD: ALL' >> /etc/sudoers.d/10-rust \
+  && echo 'Defaults    env_keep += "DEBIAN_FRONTEND"' >> /etc/sudoers.d/env_keep
+
+USER rust
+RUN mkdir /home/rust/.delorean
+
+COPY target/release/delorean /usr/bin/delorean
+
+EXPOSE 8080 8082
+
+CMD ["delorean"]
