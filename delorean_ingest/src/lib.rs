@@ -512,11 +512,13 @@ fn pack_lines<'a>(schema: &Schema, lines: &[ParsedLine<'a>]) -> Vec<Packers> {
 /// data format and then passes that converted data to a
 /// `DeloreanTableWriter`
 pub struct TSMFileConverter {
-    table_writer_source: Box<dyn DeloreanTableWriterSource>,
+    table_writer_source: Box<dyn DeloreanTableWriterSource + std::marker::Send>,
 }
 
 impl TSMFileConverter {
-    pub fn new(table_writer_source: Box<dyn DeloreanTableWriterSource>) -> Self {
+    pub fn new(
+        table_writer_source: Box<dyn DeloreanTableWriterSource + std::marker::Send>,
+    ) -> Self {
         Self {
             table_writer_source,
         }
@@ -536,22 +538,47 @@ impl TSMFileConverter {
 
         let mapper = TSMMeasurementMapper::new(index_reader.peekable());
 
-        for measurement in mapper {
-            let mut m = measurement.context(TSMProcessing)?;
-            let (schema, packed_columns) =
-                Self::process_measurement_table(&mut block_reader, &mut m)?;
+        crossbeam::scope(|scope| {
+            for measurement in mapper {
+                let mut m = measurement.context(TSMProcessing).unwrap();
+                let (schema, packed_columns) =
+                    Self::process_measurement_table(&mut block_reader, &mut m).unwrap();
 
-            let mut table_writer = self
-                .table_writer_source
-                .next_writer(&schema)
-                .context(WriterCreation)?;
+                scope.spawn(move |_| {
+                    let mut table_writer = self
+                        .table_writer_source
+                        .next_writer(&schema)
+                        .context(WriterCreation)
+                        .unwrap();
 
-            table_writer
-                .write_batch(&packed_columns)
-                .context(WriterCreation)?;
-            table_writer.close().context(WriterCreation)?;
-        }
+                    table_writer
+                        .write_batch(&packed_columns)
+                        .context(WriterCreation)
+                        .unwrap();
+                    table_writer.close().context(WriterCreation).unwrap();
+                });
+
+                // std::thread::spawn(|| -> Result<(), Error> {
+                //     let mut m = measurement.context(TSMProcessing)?;
+                //     let (schema, packed_columns) =
+                //         Self::process_measurement_table(&mut block_reader, &mut m)?;
+
+                //     let mut table_writer = self
+                //         .table_writer_source
+                //         .next_writer(&schema)
+                //         .context(WriterCreation)?;
+
+                //     table_writer
+                //         .write_batch(&packed_columns)
+                //         .context(WriterCreation)?;
+                //     table_writer.close().context(WriterCreation)?;
+                //     Ok(())
+                // });
+            }
+        })
+        .unwrap();
         Ok(())
+        // .map_err(|e| Error::TSMProcessing { source: e })
     }
 
     // Given a measurement table `process_measurement_table` produces an
