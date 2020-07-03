@@ -246,24 +246,33 @@ async fn read(req: hyper::Request<Body>, app: Arc<App>) -> Result<Option<Body>, 
         query_string: query,
     })?;
 
+    debug!("read_info = {:?}", read_info);
+
     // Even though tools like `inch` and `storectl query` pass bucket IDs, treat them as
     // `bucket_name` in delorean because MemDB sets auto-incrementing IDs for buckets.
     let org = read_info.org;
+    debug!("org = {:?}", org);
     let bucket_name = read_info.bucket.to_string();
+    debug!("bucket_name = {:?}", bucket_name);
 
     let predicate = predicate::parse_predicate(&read_info.predicate).context(InvalidPredicate {
         predicate: &read_info.predicate,
     })?;
 
+    debug!("predicate = {:?}", predicate);
+
     let now = std::time::SystemTime::now();
+    debug!("now = {:?}", now);
 
     let start = duration_to_nanos_or_default(
         read_info.start.as_deref(),
         now,
         now.checked_sub(Duration::from_secs(10)).unwrap(),
     )?;
+    debug!("start = {:?}", start);
 
     let end = duration_to_nanos_or_default(read_info.stop.as_deref(), now, now)?;
+    debug!("end = {:?}", end);
 
     let range = TimestampRange { start, end };
 
@@ -279,6 +288,8 @@ async fn read(req: hyper::Request<Body>, app: Arc<App>) -> Result<Option<Body>, 
             org,
             bucket_name: bucket_name.clone(),
         })?;
+
+    debug!("bucket_id = {:?}", bucket_id);
 
     let batches = app
         .db
@@ -343,6 +354,8 @@ async fn read(req: hyper::Request<Body>, app: Arc<App>) -> Result<Option<Body>, 
                 bucket_name: bucket_name.clone(),
                 source: Box::new(e),
             })?;
+
+        debug!("data = {:?}", String::from_utf8(data.clone()));
 
         response_body.append(&mut data);
         response_body.append(&mut b"\n".to_vec());

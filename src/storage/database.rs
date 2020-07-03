@@ -270,22 +270,30 @@ impl Database {
         bucket_data.write_points(points).await
     }
 
+    #[tracing::instrument(level = "debug")]
     pub async fn get_bucket_id_by_name(
         &self,
         org_id: Id,
         bucket_name: &str,
     ) -> Result<Option<Id>, StorageError> {
         let orgs = self.organizations.read().await;
+        debug!("orgs = {:?}", orgs.keys().collect::<Vec<_>>());
 
         let org = match orgs.get(&org_id) {
             Some(org) => org,
             None => return Ok(None),
         };
 
-        let id = match org.read().await.bucket_name_to_id.get(bucket_name) {
+        debug!("org = {:?}", org);
+        let o = org.read().await;
+        debug!("bucket_name_to_id = {:?}", o.bucket_name_to_id);
+
+        let id = match o.bucket_name_to_id.get(bucket_name) {
             Some(id) => Some(*id),
             None => None,
         };
+
+        debug!("id = {:?}", id);
 
         Ok(id)
     }
