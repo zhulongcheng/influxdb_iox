@@ -468,15 +468,16 @@ mod test {
             v += 0.001;
         }
 
-        let now = std::time::Instant::now();
-        let mut result = 0.0;
-        let mut i = 0;
-        while i < vec.len() - 4 {
-            result += vec[i] + vec[i + 1] + vec[i + 2] + vec[i + 3];
-            i += 4;
+        for i in 0..10 {
+            let now = std::time::Instant::now();
+            let mut result = 0.0;
+            let mut i = 0;
+            for i in (0..vec.len()).step_by(4) {
+                result += vec[i] + vec[i + 1] + vec[i + 2] + vec[i + 3];
+            }
+            let time = now.elapsed();
+            println!("Total time {:?} {:?}", time, result);
         }
-        let time = now.elapsed();
-        println!("Total time {:?} {:?}", time, result);
     }
 
     #[cfg(all(
@@ -488,7 +489,7 @@ mod test {
     #[cfg(target_arch = "x86_64")]
     use std::arch::x86_64::*;
     #[test]
-    fn big_sum_simd() {
+    fn simd_sum() {
         let mut vec: Vec<f64> = Vec::new();
         let mut v = 0.001_f64;
         while vec.len() != 1_000_000_000 {
@@ -500,22 +501,25 @@ mod test {
             v += 0.001;
         }
 
-        for i in 0..100 {
+        for i in 0..10 {
             let now = std::time::Instant::now();
             unsafe {
-                let v_off: *mut f64 = vec.as_mut_ptr();
+                // let v_off: *mut f64 = vec.as_mut_ptr();
                 let mut result_vec = _mm256_setzero_pd();
 
-                for i in 0..(vec.len() / 4) {
-                    result_vec =
-                        _mm256_add_pd(result_vec, _mm256_load_pd(v_off.offset(i as isize * 4)));
+                for i in (0..vec.len()).step_by(4) {
+                    // result_vec = _mm256_add_pd(result_vec, _mm256_load_pd(v_off.offset(i * 4)));
+                    result_vec = _mm256_add_pd(
+                        result_vec,
+                        _mm256_set_pd(vec[i], vec[i + 1], vec[i + 2], vec[i + 3]),
+                    );
                 }
                 let result: (f64, f64, f64, f64) = std::mem::transmute(result_vec);
                 let time = now.elapsed();
                 println!(
                     "Total time {:?} {:?}",
                     time,
-                    result.0 + result.1 + result.2 + result.3
+                    result.0 + result.1 + result.2 + result.3,
                 );
             }
         }
