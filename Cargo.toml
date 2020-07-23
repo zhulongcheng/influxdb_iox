@@ -24,6 +24,9 @@ members = [
 [profile.release]
 debug = true
 
+[profile.test] 
+opt-level = 3
+
 [dependencies]
 delorean_generated_types = { path = "delorean_generated_types" }
 delorean_ingest = { path = "delorean_ingest" }
