@@ -414,6 +414,7 @@ pub enum RestorationError {
 pub fn restore_partitions_from_wal(
     wal_entries: impl Iterator<Item = WalResult<WalEntry>>,
 ) -> Result<(Vec<Partition>, u32, RestorationStats), RestorationError> {
+    println!("RESTORING==============");
     let mut stats = RestorationStats::default();
     let mut partitions = HashMap::new();
     let mut next_partition_id = 0;
@@ -427,6 +428,7 @@ pub fn restore_partitions_from_wal(
         if let Some(entries) = batch.entries() {
             for entry in entries {
                 if let Some(po) = entry.partition_open() {
+                    println!("restore partition_open {:?}", po.id());
                     let id = po.id();
                     if id > next_partition_id {
                         next_partition_id = id;
@@ -447,6 +449,7 @@ pub fn restore_partitions_from_wal(
                     stats.dict_values += 1;
                     p.intern_new_dict_entry(da.value().unwrap());
                 } else if let Some(sa) = entry.schema_append() {
+                    println!("restore schema_append {}, {}", sa.table_id(), sa.column_id());
                     let tid = sa.table_id();
                     stats.tables.insert(tid);
                     let p = partitions
@@ -456,6 +459,7 @@ pub fn restore_partitions_from_wal(
                         })?;
                     p.append_wal_schema(sa.table_id(), sa.column_id(), sa.column_type());
                 } else if let Some(row) = entry.write() {
+                    println!("restore write {}", row.table_id());
                     let p = partitions
                         .get_mut(&row.partition_id())
                         .context(PartitionNotFound {
@@ -693,10 +697,13 @@ impl Partition {
     fn append_wal_schema(&mut self, table_id: u32, column_id: u32, column_type: wb::ColumnType) {
         let partition_id = self.id;
 
-        let t = self
-            .tables
-            .entry(table_id)
-            .or_insert_with(|| Table::new(table_id, partition_id));
+        let t = self.tables.entry(table_id).or_insert_with(|| {
+            println!(
+                "append_wal_schema partition {} inserting table {}",
+                partition_id, table_id
+            );
+            Table::new(table_id, partition_id)
+        });
         t.append_schema(column_id, column_type);
     }
 
@@ -705,6 +712,7 @@ impl Partition {
         table_id: u32,
         values: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
     ) -> Result<(), RestorationError> {
+        println!("add_wal_row tables = {:?}", self.tables);
         let t = self
             .tables
             .get_mut(&table_id)
@@ -755,10 +763,13 @@ impl Partition {
             value: Value::FieldValue(&time_value),
         });
 
-        let table = self
-            .tables
-            .entry(table_id)
-            .or_insert_with(|| Table::new(table_id, partition_id));
+        let table = self.tables.entry(table_id).or_insert_with(|| {
+            println!(
+                "write_line partition {} inserting table {}",
+                partition_id, table_id
+            );
+            Table::new(table_id, partition_id)
+        });
         table.add_row(&values, builder)?;
 
         Ok(())
@@ -878,6 +889,8 @@ impl Table {
     }
 
     fn append_schema(&mut self, column_id: u32, column_type: wb::ColumnType) {
+        println!("table append_schema column_id: {}, column_type: {:?}", column_id, column_type);
+
         let column_index = self.columns.len();
         self.column_id_to_index.insert(column_id, column_index);
         let row_count = self.row_count();
@@ -920,13 +933,17 @@ impl Table {
     ) -> Result<(), RestorationError> {
         let row_count = self.row_count();
 
+        println!("table.add_wal_row columns = {:?}", self.columns);
+
         for value in values {
+            println!("value.column_index = {}", value.column_index());
             let col = self
                 .columns
                 .get_mut(value.column_index() as usize)
                 .context(ColumnNotFound {
                     column: value.column_index(),
                 })?;
+            println!("table.add_wal_row col = {:?}, value = {:?}", col, value.value_as_tag_value().unwrap().value());
             match (col, value.value_type()) {
                 (Column::Tag(vals), wb::ColumnValue::TagValue) => {
                     let v = value.value_as_tag_value().context(WalValueTypeMismatch {
@@ -1239,6 +1256,7 @@ struct WalEntryBuilder<'a> {
 
 impl WalEntryBuilder<'_> {
     fn add_dictionary_entry(&mut self, partition_id: u32, value: &str, id: u32) {
+        println!("add_dictionary_entry {}, {}, {}", partition_id, value, id);
         let value_offset = self.fbb.create_string(value);
 
         let dictionary_add = wb::DictionaryAdd::create(
@@ -1268,6 +1286,7 @@ impl WalEntryBuilder<'_> {
     }
 
     fn add_partition_open(&mut self, id: u32, name: &str) {
+        println!("add_partition_open {}, {}", id, name);
         self.partitions.insert(id);
         let partition_name = self.fbb.create_string(&name);
 
@@ -1297,6 +1316,10 @@ impl WalEntryBuilder<'_> {
         column_id: u32,
         column_type: wb::ColumnType,
     ) {
+        println!(
+            "add_schema_append {}, {}, {}, {:?}",
+            partition_id, table_id, column_id, column_type
+        );
         let schema_append = wb::SchemaAppend::create(
             &mut self.fbb,
             &wb::SchemaAppendArgs {
@@ -1319,12 +1342,14 @@ impl WalEntryBuilder<'_> {
     }
 
     fn add_tag_value(&mut self, column_index: u16, value: u32) {
+        println!("add_tag_value {}, {}", column_index, value);
         let tv = wb::TagValue::create(&mut self.fbb, &wb::TagValueArgs { value });
 
         self.add_value(column_index, wb::ColumnValue::TagValue, tv.as_union_value());
     }
 
     fn add_string_value(&mut self, column_index: u16, value: &str) {
+        println!("add_string_value {}, {}", column_index, value);
         let value_offset = self.fbb.create_string(value);
 
         let sv = wb::StringValue::create(
@@ -1342,18 +1367,21 @@ impl WalEntryBuilder<'_> {
     }
 
     fn add_f64_value(&mut self, column_index: u16, value: f64) {
+        println!("add_f64_value {}, {}", column_index, value);
         let fv = wb::F64Value::create(&mut self.fbb, &wb::F64ValueArgs { value });
 
         self.add_value(column_index, wb::ColumnValue::F64Value, fv.as_union_value());
     }
 
     fn add_i64_value(&mut self, column_index: u16, value: i64) {
+        println!("add_i64_value {}, {}", column_index, value);
         let iv = wb::I64Value::create(&mut self.fbb, &wb::I64ValueArgs { value });
 
         self.add_value(column_index, wb::ColumnValue::I64Value, iv.as_union_value());
     }
 
     fn add_bool_value(&mut self, column_index: u16, value: bool) {
+        println!("add_bool_value {}, {}", column_index, value);
         let bv = wb::BoolValue::create(&mut self.fbb, &wb::BoolValueArgs { value });
 
         self.add_value(
@@ -1369,6 +1397,8 @@ impl WalEntryBuilder<'_> {
         value_type: wb::ColumnValue,
         value: flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>,
     ) {
+        println!("add_value {}, {:?}", column_index, value_type);
+
         let row_value = wb::Value::create(
             &mut self.fbb,
             &wb::ValueArgs {
@@ -1382,6 +1412,8 @@ impl WalEntryBuilder<'_> {
     }
 
     fn add_row(&mut self, partition_id: u32, table_id: u32) {
+        println!("add_row {}, {}", partition_id, table_id);
+
         let values_vec = self.fbb.create_vector(&self.row_values);
 
         let row = wb::Row::create(
@@ -1406,6 +1438,7 @@ impl WalEntryBuilder<'_> {
     }
 
     fn create_batch(&mut self) {
+        println!("create_batch");
         let entry_vec = self.fbb.create_vector(&self.entries);
 
         let batch = wb::WriteBufferBatch::create(
