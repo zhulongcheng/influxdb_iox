@@ -8,7 +8,7 @@ use delorean_storage_interface::{Database, DatabaseStore};
 use delorean_wal::{Entry as WalEntry, Result as WalResult, WalBuilder};
 use delorean_wal_writer::{start_wal_sync_task, Error as WalWriterError, WalDetails};
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::convert::TryFrom;
 use std::fs;
 use std::io::ErrorKind;
@@ -475,7 +475,7 @@ pub fn restore_partitions_from_wal(
 pub struct RestorationStats {
     row_count: usize,
     dict_values: usize,
-    tables: HashSet<u32>,
+    tables: BTreeSet<u32>,
 }
 
 #[async_trait]
