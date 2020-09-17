@@ -412,7 +412,9 @@ pub fn restore_partitions_from_wal(
 ) -> Result<(Vec<Partition>, u32, RestorationStats), RestorationError> {
     println!("RESTORING==============");
     let mut stats = RestorationStats::default();
-    let mut next_partition_generation = 0;
+    let mut max_partition_generation = 0;
+
+    let mut partitions = BTreeMap::new();
 
     for wal_entry in wal_entries {
         let wal_entry = wal_entry.context(WalEntryRead)?;
@@ -423,7 +425,15 @@ pub fn restore_partitions_from_wal(
         if let Some(entries) = batch.entries() {
             for entry in entries {
                 if let Some(po) = entry.partition_open() {
-                    todo!("handle partition open");
+                    let generation = po.generation();
+                    let key = po.key().expect("restored partitions should have keys");
+
+                    println!("restore partition open: generation = {}, key = {}", generation, key);
+                    if generation > max_partition_generation {
+                        max_partition_generation = generation;
+                    }
+
+                    partitions.entry(generation).or_insert_with(|| Partition::new(generation, key));
                 } else if let Some(_ps) = entry.partition_snapshot_started() {
                     todo!("handle partition snapshot");
                 } else if let Some(_pf) = entry.partition_snapshot_finished() {
@@ -436,7 +446,9 @@ pub fn restore_partitions_from_wal(
         }
     }
 
-    Ok((vec![], next_partition_generation, stats))
+    let partitions = partitions.into_iter().map(|(_, v)| v).collect();
+
+    Ok((partitions, max_partition_generation, stats))
 }
 
 #[derive(Default, Debug)]
@@ -603,9 +615,9 @@ pub struct Partition {
 }
 
 impl Partition {
-    fn new(generation: u32, name: String) -> Self {
+    fn new(generation: u32, name: impl Into<String>) -> Self {
         Self {
-            name,
+            name: name.into(),
             generation,
             dictionary: StringInterner::new(),
             tables: HashMap::new(),
