@@ -21,6 +21,7 @@ use chrono::{offset::TimeZone, Utc};
 use datafusion::{
     datasource::MemTable, error::ExecutionError, execution::context::ExecutionContext,
 };
+use hashlink::LinkedHashMap;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use sqlparser::{
     ast::{SetExpr, Statement, TableFactor},
@@ -757,7 +758,7 @@ fn type_description(value: wb::ColumnValue) -> &'static str {
 struct Table {
     name: String,
     partition_generation: u32,
-    columns: BTreeMap<String, Column>,
+    columns: LinkedHashMap<String, Column>,
 }
 
 impl Table {
@@ -765,7 +766,7 @@ impl Table {
         Self {
             name: name.into(),
             partition_generation,
-            columns: BTreeMap::new(),
+            columns: LinkedHashMap::new(),
         }
     }
 
