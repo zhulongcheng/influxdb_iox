@@ -82,10 +82,10 @@ pub enum Error {
 
     #[snafu(display(
         "Error recovering WAL for partition {} on table {}",
-        partition_id,
+        partition_generation,
         table_id
     ))]
-    WalPartitionError { partition_id: u32, table_id: u32 },
+    WalPartitionError { partition_generation: u32, table_id: u32 },
 
     #[snafu(display("Error recovering write from WAL, column id {} not found", column_id))]
     WalColumnError { column_id: u16 },
@@ -111,8 +111,8 @@ pub enum Error {
     #[snafu(display("Database {} doesn't exist", database))]
     DatabaseNotFound { database: String },
 
-    #[snafu(display("Partition {} is full", partition_id))]
-    PartitionFull { partition_id: String },
+    #[snafu(display("Partition {} is full", partition_generation))]
+    PartitionFull { partition_generation: String },
 
     #[snafu(display("Table {} not found in dictionary", table))]
     TableNotFoundInDictionary { table: String },
@@ -283,7 +283,7 @@ pub struct Db {
     name: String,
     // TODO: partitions need to be wrapped in an Arc if they're going to be used without this lock
     partitions: RwLock<Vec<Partition>>,
-    next_partition_id: AtomicU32,
+    next_partition_generation: AtomicU32,
     wal_details: Option<WalDetails>,
     dir: PathBuf,
 }
@@ -319,7 +319,7 @@ impl Db {
             name: name.to_string(),
             dir,
             partitions: RwLock::new(vec![]),
-            next_partition_id: AtomicU32::new(1),
+            next_partition_generation: AtomicU32::new(1),
             wal_details: Some(wal_details),
         })
     }
@@ -346,7 +346,7 @@ impl Db {
             .entries()
             .context(LoadingWal { database: &name })?;
 
-        let (partitions, next_partition_id, stats) =
+        let (partitions, next_partition_generation, stats) =
             restore_partitions_from_wal(entries).context(WalRecoverError { database: &name })?;
 
         let elapsed = now.elapsed();
@@ -360,17 +360,17 @@ impl Db {
         );
 
         info!(
-            "{} database partition count: {}, next_id {}",
+            "{} database partition count: {}, next generation {}",
             &name,
             partitions.len(),
-            next_partition_id
+            next_partition_generation
         );
 
         Ok(Self {
             name,
             dir: wal_dir,
             partitions: RwLock::new(partitions),
-            next_partition_id: AtomicU32::new(next_partition_id + 1),
+            next_partition_generation: AtomicU32::new(next_partition_generation + 1),
             wal_details: Some(wal_details),
         })
     }
@@ -384,8 +384,8 @@ pub enum RestorationError {
     #[snafu(display("Partition {} not found", partition))]
     PartitionNotFound { partition: u32 },
 
-    #[snafu(display("Table {} not found", table))]
-    TableNotFound { table: u32 },
+    #[snafu(display("Table {} not found in partition {}", table, partition))]
+    TableNotFound { table: u32, partition: u32 },
 
     #[snafu(display("Column {} not found", column))]
     ColumnNotFound { column: u32 },
@@ -416,7 +416,7 @@ pub fn restore_partitions_from_wal(
 ) -> Result<(Vec<Partition>, u32, RestorationStats), RestorationError> {
     println!("RESTORING==============");
     let mut stats = RestorationStats::default();
-    let mut next_partition_id = 0;
+    let mut next_partition_generation = 0;
 
     for wal_entry in wal_entries {
         let wal_entry = wal_entry.context(WalEntryRead)?;
@@ -440,7 +440,7 @@ pub fn restore_partitions_from_wal(
         }
     }
 
-    Ok((vec![], next_partition_id, stats))
+    Ok((vec![], next_partition_generation, stats))
 }
 
 #[derive(Default, Debug)]
@@ -467,13 +467,13 @@ impl Database for Db {
             match partitions.iter_mut().find(|p| p.should_write(&key)) {
                 Some(p) => p.write_line(line, &mut builder)?,
                 None => {
-                    let id = self.next_partition_id.fetch_add(1, Ordering::Relaxed);
+                    let generation = self.next_partition_generation.fetch_add(1, Ordering::Relaxed);
 
                     if let Some(builder) = &mut builder {
-                        builder.add_partition_open(id, &key);
+                        builder.add_partition_open(generation, &key);
                     }
 
-                    let mut p = Partition::new(id, key);
+                    let mut p = Partition::new(generation, key);
                     p.write_line(line, &mut builder)?;
                     partitions.push(p)
                 }
@@ -620,7 +620,7 @@ struct ArrowTable {
 #[derive(Debug)]
 pub struct Partition {
     name: String,
-    id: u32,
+    generation: u32,
     /// `dictionary` maps &str -> u32. The u32s are used in place of
     /// String or str to avoid slow string operations. The same
     /// dictionary is used for table names, tag and field values
@@ -631,10 +631,10 @@ pub struct Partition {
 }
 
 impl Partition {
-    fn new(id: u32, name: String) -> Self {
+    fn new(generation: u32, name: String) -> Self {
         Self {
             name,
-            id,
+            generation,
             dictionary: StringInterner::new(),
             tables: HashMap::new(),
             is_open: true,
@@ -657,14 +657,14 @@ impl Partition {
     }
 
     fn append_wal_schema(&mut self, table_id: u32, column_id: u32, column_type: wb::ColumnType) {
-        let partition_id = self.id;
+        let partition_generation = self.generation;
 
         let t = self.tables.entry(table_id).or_insert_with(|| {
             println!(
                 "append_wal_schema partition {} inserting table {}",
-                partition_id, table_id
+                partition_generation, table_id
             );
-            Table::new(table_id, partition_id)
+            Table::new(table_id, partition_generation)
         });
         t.append_schema(column_id, column_type);
     }
@@ -678,7 +678,7 @@ impl Partition {
         let t = self
             .tables
             .get_mut(&table_id)
-            .context(TableNotFound { table: table_id })?;
+            .context(TableNotFound { table: table_id , partition: self.generation })?;
         t.add_wal_row(values)
     }
 
@@ -718,7 +718,7 @@ impl Partition {
             .get(&table_id)
             .context(TableNotFoundInPartition {
                 table: table_id,
-                partition: self.id,
+                partition: self.generation,
             })?;
         table.to_arrow(|id| self.lookup_id(id))
     }
@@ -770,17 +770,17 @@ fn type_description(value: wb::ColumnValue) -> &'static str {
 #[derive(Debug)]
 struct Table {
     id: u32,
-    partition_id: u32,
+    partition_generation: u32,
     /// Maps column name (as a u32 in the partition dictionary) to an index in self.columns
     column_id_to_index: HashMap<u32, usize>,
     columns: Vec<Column>,
 }
 
 impl Table {
-    fn new(id: u32, partition_id: u32) -> Self {
+    fn new(id: u32, partition_generation: u32) -> Self {
         Self {
             id,
-            partition_id,
+            partition_generation,
             column_id_to_index: HashMap::new(),
             columns: Vec::new(),
         }
@@ -1063,8 +1063,8 @@ impl WalEntryBuilder<'_> {
         self.row_values.push(row_value);
     }
 
-    fn add_row(&mut self, partition_id: u32, table: &str) {
-        println!("add_row {}, {}", partition_id, table);
+    fn add_row(&mut self, partition_generation: u32, table: &str) {
+        println!("add_row {}, {}", partition_generation, table);
 
         let table = self.fbb.create_string(table);
         let values_vec = self.fbb.create_vector(&self.row_values);
@@ -1459,14 +1459,14 @@ mod tests {
             // Skip the first 2 entries in the wal; only restore from the last 2
             let wal_entries = wal_entries.skip(2);
 
-            let (partitions, next_partition_id, _stats) =
-                restore_partitions_from_wal(&name, wal_entries)?;
+            let (partitions, next_partition_generation, _stats) =
+                restore_partitions_from_wal(wal_entries)?;
 
             let db = Db {
                 name,
                 dir,
                 partitions: RwLock::new(partitions),
-                next_partition_id: AtomicU32::new(next_partition_id + 1),
+                next_partition_generation: AtomicU32::new(next_partition_generation + 1),
                 wal_details: None,
             };
 
