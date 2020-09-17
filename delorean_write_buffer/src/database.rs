@@ -664,7 +664,7 @@ impl Partition {
                 "write_line partition {} inserting table {}",
                 partition_generation, table_name
             );
-            Table::new(table_name, partition_generation)
+            Table::new(table_name)
         });
         table.add_row(&values, builder)?;
 
@@ -726,15 +726,13 @@ fn type_description(value: wb::ColumnValue) -> &'static str {
 #[derive(Debug)]
 struct Table {
     name: String,
-    partition_generation: u32,
     columns: LinkedHashMap<String, Column>,
 }
 
 impl Table {
-    fn new(name: impl Into<String>, partition_generation: u32) -> Self {
+    fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            partition_generation,
             columns: LinkedHashMap::new(),
         }
     }
