@@ -30,7 +30,7 @@ use sqlparser::{
 };
 
 use chrono::{offset::TimeZone, Utc};
-use snafu::{OptionExt, ResultExt, Snafu};
+use snafu::{ensure, OptionExt, ResultExt, Snafu};
 use sqlparser::ast::TableFactor;
 use string_interner::{
     backend::StringBackend, DefaultHashBuilder, DefaultSymbol, StringInterner, Symbol,
@@ -97,12 +97,12 @@ pub enum Error {
 
     #[snafu(display(
         "Schema mismatch: for column {}: can't insert {} into column with type {}",
-        column_id,
+        column,
         inserted_value_type,
         existing_column_type
     ))]
     SchemaMismatch {
-        column_id: usize,
+        column: String,
         existing_column_type: String,
         inserted_value_type: String,
     },
@@ -789,7 +789,72 @@ impl Table {
         values: &[ColumnValue<'_>],
         builder: &mut Option<WalEntryBuilder<'_>>,
     ) -> Result<()> {
-        unimplemented!();
+        let row_count = self.row_count();
+
+        // insert new columns and validate existing ones
+        for col_val in values {
+            let column = match self.columns.get(col_val.column) {
+                Some(col) => col,
+                None => {
+                    // Add the column and make all values for existing rows None
+                    let column_values = match col_val.value {
+                        Value::TagValue(_) => {
+                            let mut v = Vec::with_capacity(row_count + 1);
+                            v.resize_with(row_count, || None);
+                            Column::Tag(v)
+                        }
+                        Value::FieldValue(FieldValue::I64(_)) => {
+                            let mut v = Vec::with_capacity(row_count + 1);
+                            v.resize_with(row_count, || None);
+                            Column::I64(v)
+                        }
+                        Value::FieldValue(FieldValue::F64(_)) => {
+                            let mut v = Vec::with_capacity(row_count + 1);
+                            v.resize_with(row_count, || None);
+                            Column::F64(v)
+                        }
+                        Value::FieldValue(FieldValue::Boolean(_)) => {
+                            let mut v = Vec::with_capacity(row_count + 1);
+                            v.resize_with(row_count, || None);
+                            Column::Bool(v)
+                        }
+                        Value::FieldValue(FieldValue::String(_)) => {
+                            let mut v = Vec::with_capacity(row_count + 1);
+                            v.resize_with(row_count, || None);
+                            Column::String(v)
+                        }
+                    };
+
+                    self.columns.insert(col_val.column.into(), column_values);
+                    self.columns.get(col_val.column).expect("just inserted column")
+                }
+            };
+
+            ensure!(
+                column.matches_type(&col_val),
+                SchemaMismatch {
+                    column: col_val.column,
+                    existing_column_type: column.type_description(),
+                    inserted_value_type: col_val.value.type_description(),
+                }
+            );
+        }
+
+        // insert the actual values
+        for col_val in values {
+            let column = self.columns
+                .get_mut(col_val.column)
+                .expect("ensured existence of column in previous loop");
+
+            column.push(&col_val.value).expect("ensured schema match in previous loop");
+        }
+
+        // make sure all the columns are of the same length
+        for (_, col) in &mut self.columns {
+            col.push_none_if_len_equal(row_count);
+        }
+
+        Ok(())
     }
 
     fn to_arrow<'a, F>(&self, lookup_id: F) -> Result<RecordBatch>
@@ -822,10 +887,7 @@ impl Table {
                     for v in vals {
                         match v {
                             None => builder.append_null(),
-                            Some(id) => {
-                                let tag_value = lookup_id(*id)?;
-                                builder.append_value(tag_value)
-                            }
+                            Some(s) => builder.append_value(s),
                         }
                         .context(ArrowError {})?;
                     }
@@ -1029,6 +1091,15 @@ impl WalEntryBuilder<'_> {
     }
 }
 
+#[derive(Debug, Snafu)]
+enum ColumnError {
+    #[snafu(display("Types did not match. Expected: {}, got: {}", expected, got))]
+    TypeMismatch {
+        expected: String,
+        got: String,
+    },
+}
+
 #[derive(Debug)]
 /// Stores the actual data for columns in a  partition
 ///
@@ -1038,7 +1109,7 @@ enum Column {
     I64(Vec<Option<i64>>),
     String(Vec<Option<String>>),
     Bool(Vec<Option<bool>>),
-    Tag(Vec<Option<u32>>),
+    Tag(Vec<Option<String>>),
 }
 
 impl Column {
@@ -1075,6 +1146,19 @@ impl Column {
             },
             _ => false,
         }
+    }
+
+    fn push(&mut self, value: &Value<'_>) -> Result<(), ColumnError> {
+        match (self, value) {
+            (Self::Tag(vals), Value::TagValue(val)) => vals.push(Some(val.to_string())),
+            (Self::String(vals), Value::FieldValue(FieldValue::String(val))) => vals.push(Some(val.to_string())),
+            (Self::Bool(vals), Value::FieldValue(FieldValue::Boolean(val))) => vals.push(Some(*val)),
+            (Self::I64(vals), Value::FieldValue(FieldValue::I64(val))) => vals.push(Some(*val)),
+            (Self::F64(vals), Value::FieldValue(FieldValue::F64(val))) => vals.push(Some(*val)),
+            (column, value) => return TypeMismatch { expected: column.type_description(), got: value.type_description()}.fail(),
+        }
+
+        Ok(())
     }
 
     // push_none_if_len_equal will add a None value to the end of the Vec of values if the
