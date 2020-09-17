@@ -650,6 +650,7 @@ impl Partition {
             });
         }
 
+        // TODO: shouldn't the default for timestamp be the current time, not 0?
         let time = line.timestamp.unwrap_or(0);
         let time_value = FieldValue::I64(time);
         values.push(ColumnValue {
@@ -657,6 +658,7 @@ impl Partition {
             value: Value::FieldValue(&time_value),
         });
 
+        // TODO: case for the raw_entry API
         let table = self.tables.entry(table_name.into()).or_insert_with(|| {
             println!(
                 "write_line partition {} inserting table {}",
