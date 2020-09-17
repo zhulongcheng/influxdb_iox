@@ -69,7 +69,6 @@ snafu = "0.6.2"
 libflate = "1.0.0"
 arrow = { git = "https://github.com/apache/arrow.git", rev = "62dfa114d6683172927fab40fa6c4ddabae8fef4"}
 
-
 [dev-dependencies]
 assert_cmd = "1.0.0"
 criterion = "0.3"

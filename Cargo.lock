@@ -869,6 +869,7 @@ dependencies = [
  "delorean_wal",
  "delorean_wal_writer",
  "flatbuffers",
+ "hashlink",
  "snafu",
  "sqlparser",
  "string-interner",
@@ -1235,12 +1236,31 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96282e96bfcd3da0d3aa9938bedf1e50df3269b6db08b4876d2da0bb1a0841cf"
+dependencies = [
+ "ahash",
+ "autocfg",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34f595585f103464d8d2f6e9864682d74c1601fed5e07d62b1c9058dba8246fb"
 dependencies = [
  "ahash",
  "autocfg",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c5c0c4a5176c68c5242462f8e897565a4aaafa4368bd5c94ab8b1e06d6402f7"
+dependencies = [
+ "hashbrown 0.7.2",
 ]
 
 [[package]]
@@ -2892,7 +2912,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3354fc69125aba1f70fed5365f870d5b9bd2f41ec015232082abd4ce9ab795c"
 dependencies = [
  "cfg-if",
- "hashbrown",
+ "hashbrown 0.8.1",
  "serde",
 ]
 
