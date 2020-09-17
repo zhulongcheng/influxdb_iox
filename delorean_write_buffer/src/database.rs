@@ -31,7 +31,7 @@ use sqlparser::{
 };
 
 use chrono::{offset::TimeZone, Utc};
-use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 use sqlparser::ast::TableFactor;
 use string_interner::{
     backend::StringBackend, DefaultHashBuilder, DefaultSymbol, StringInterner, Symbol,
@@ -416,7 +416,6 @@ pub fn restore_partitions_from_wal(
 ) -> Result<(Vec<Partition>, u32, RestorationStats), RestorationError> {
     println!("RESTORING==============");
     let mut stats = RestorationStats::default();
-    let mut partitions = HashMap::new();
     let mut next_partition_id = 0;
 
     for wal_entry in wal_entries {
@@ -428,52 +427,20 @@ pub fn restore_partitions_from_wal(
         if let Some(entries) = batch.entries() {
             for entry in entries {
                 if let Some(po) = entry.partition_open() {
-                    println!("restore partition_open {:?}", po.id());
-                    let id = po.id();
-                    if id > next_partition_id {
-                        next_partition_id = id;
-                    }
-                    partitions
-                        .entry(id)
-                        .or_insert_with(|| Partition::new(id, po.name().unwrap().to_string()));
+                    todo!("handle partition open");
                 } else if let Some(_ps) = entry.partition_snapshot_started() {
                     todo!("handle partition snapshot");
                 } else if let Some(_pf) = entry.partition_snapshot_finished() {
                     todo!("handle partition snapshot finished")
-                } else if let Some(da) = entry.dictionary_add() {
-                    let p = partitions
-                        .get_mut(&da.partition_id())
-                        .context(PartitionNotFound {
-                            partition: da.partition_id(),
-                        })?;
-                    stats.dict_values += 1;
-                    p.intern_new_dict_entry(da.value().unwrap());
-                } else if let Some(sa) = entry.schema_append() {
-                    println!("restore schema_append {}, {}", sa.table_id(), sa.column_id());
-                    let tid = sa.table_id();
-                    stats.tables.insert(tid);
-                    let p = partitions
-                        .get_mut(&sa.partition_id())
-                        .context(PartitionNotFound {
-                            partition: sa.partition_id(),
-                        })?;
-                    p.append_wal_schema(sa.table_id(), sa.column_id(), sa.column_type());
                 } else if let Some(row) = entry.write() {
-                    println!("restore write {}", row.table_id());
-                    let p = partitions
-                        .get_mut(&row.partition_id())
-                        .context(PartitionNotFound {
-                            partition: row.partition_id(),
-                        })?;
-                    stats.row_count += 1;
-                    p.add_wal_row(row.table_id(), &row.values().unwrap())?;
+                    println!("restore write {:?}", row.table());
+                    todo!("handle restore write");
                 }
             }
         }
     }
-    let partitions: Vec<_> = partitions.into_iter().map(|(_, p)| p).collect();
 
-    Ok((partitions, next_partition_id, stats))
+    Ok((vec![], next_partition_id, stats))
 }
 
 #[derive(Default, Debug)]
@@ -720,71 +687,7 @@ impl Partition {
         line: &ParsedLine<'_>,
         builder: &mut Option<WalEntryBuilder<'_>>,
     ) -> Result<()> {
-        if let Some(b) = builder.as_mut() {
-            b.ensure_partition_exists(self.id, &self.name);
-        }
-
-        let measurement = line.series.measurement.as_str();
-        let table_id = self.dict_or_insert(measurement, builder);
-        let partition_id = self.id;
-
-        let column_count =
-            1 + line.field_set.len() + line.series.tag_set.as_ref().map(|t| t.len()).unwrap_or(0);
-        let mut values: Vec<ColumnValue<'_>> = Vec::with_capacity(column_count);
-
-        // Make sure the time, tag and field names exist in the dictionary
-        if let Some(tags) = &line.series.tag_set {
-            for (k, v) in tags {
-                let tag_column_id = self.dict_or_insert(k.as_str(), builder);
-                let tag_value_id = self.dict_or_insert(v.as_str(), builder);
-                values.push(ColumnValue {
-                    id: tag_column_id,
-                    value: Value::TagValueId(tag_value_id),
-                });
-            }
-        }
-        for (field_name, value) in &line.field_set {
-            let field_id = self.dict_or_insert(field_name.as_str(), builder);
-            values.push(ColumnValue {
-                id: field_id,
-                value: Value::FieldValue(value),
-            });
-        }
-        let time_id = self.dict_or_insert(TIME_COLUMN_NAME, builder);
-        let time = line.timestamp.unwrap_or(0);
-        let time_value = FieldValue::I64(time);
-        values.push(ColumnValue {
-            id: time_id,
-            value: Value::FieldValue(&time_value),
-        });
-
-        let table = self.tables.entry(table_id).or_insert_with(|| {
-            println!(
-                "write_line partition {} inserting table {}",
-                partition_id, table_id
-            );
-            Table::new(table_id, partition_id)
-        });
-        table.add_row(&values, builder)?;
-
-        Ok(())
-    }
-
-    /// Returns the id corresponding to value, adding an entry for the
-    /// id if it is not yet present in the dictionary.
-    fn dict_or_insert(&mut self, value: &str, builder: &mut Option<WalEntryBuilder<'_>>) -> u32 {
-        match self.dictionary.get(value) {
-            Some(id) => symbol_to_u32(id),
-            None => {
-                let id = symbol_to_u32(self.dictionary.get_or_intern(value));
-
-                if let Some(builder) = builder {
-                    builder.add_dictionary_entry(self.id, value, id);
-                }
-
-                id
-            }
-        }
+        unimplemented!();
     }
 
     /// Returns the id corresponding to value, or an error if no such
@@ -926,73 +829,7 @@ impl Table {
         &mut self,
         values: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
     ) -> Result<(), RestorationError> {
-        let row_count = self.row_count();
-
-        println!("table.add_wal_row columns = {:?}", self.columns);
-
-        for value in values {
-            println!("value.column_index = {}", value.column_index());
-            let col = self
-                .columns
-                .get_mut(value.column_index() as usize)
-                .context(ColumnNotFound {
-                    column: value.column_index(),
-                })?;
-            println!("table.add_wal_row col = {:?}, value = {:?}", col, value.value_as_tag_value().unwrap().value());
-            match (col, value.value_type()) {
-                (Column::Tag(vals), wb::ColumnValue::TagValue) => {
-                    let v = value.value_as_tag_value().context(WalValueTypeMismatch {
-                        column: value.column_index(),
-                        expected: "tag",
-                    })?;
-                    vals.push(Some(v.value()));
-                }
-                (Column::Bool(vals), wb::ColumnValue::BoolValue) => {
-                    let v = value.value_as_bool_value().context(WalValueTypeMismatch {
-                        column: value.column_index(),
-                        expected: "bool",
-                    })?;
-                    vals.push(Some(v.value()));
-                }
-                (Column::String(vals), wb::ColumnValue::StringValue) => {
-                    let v = value
-                        .value_as_string_value()
-                        .context(WalValueTypeMismatch {
-                            column: value.column_index(),
-                            expected: "String",
-                        })?;
-                    vals.push(Some(v.value().unwrap().to_string()));
-                }
-                (Column::I64(vals), wb::ColumnValue::I64Value) => {
-                    let v = value.value_as_i64value().context(WalValueTypeMismatch {
-                        column: value.column_index(),
-                        expected: "i64",
-                    })?;
-                    vals.push(Some(v.value()));
-                }
-                (Column::F64(vals), wb::ColumnValue::F64Value) => {
-                    let v = value.value_as_f64value().context(WalValueTypeMismatch {
-                        column: value.column_index(),
-                        expected: "f64",
-                    })?;
-                    vals.push(Some(v.value()));
-                }
-                (existing_column, inserted_value) => {
-                    return ColumnTypeMismatch {
-                        column: value.column_index(),
-                        existing_column_type: existing_column.type_description(),
-                        inserted_value_type: type_description(inserted_value),
-                    }
-                    .fail()
-                }
-            }
-        }
-
-        for col in &mut self.columns {
-            col.push_none_if_len_equal(row_count);
-        }
-
-        Ok(())
+        unimplemented!();
     }
 
     fn row_count(&self) -> usize {
@@ -1015,144 +852,7 @@ impl Table {
         values: &[ColumnValue<'_>],
         builder: &mut Option<WalEntryBuilder<'_>>,
     ) -> Result<()> {
-        let row_count = self.row_count();
-
-        // insert new columns and validate existing ones
-        for val in values {
-            let (column, column_id) = match self.column_id_to_index.get(&val.id) {
-                Some(idx) => (&mut self.columns[*idx], *idx),
-                None => {
-                    // Add the column and make all values for existing rows None
-                    let index = self.columns.len();
-                    self.column_id_to_index.insert(val.id, index);
-
-                    let (col, wal_type) = match val.value {
-                        Value::TagValueId(_) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            (Column::Tag(v), wb::ColumnType::Tag)
-                        }
-                        Value::FieldValue(FieldValue::I64(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            (Column::I64(v), wb::ColumnType::I64)
-                        }
-                        Value::FieldValue(FieldValue::F64(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            (Column::F64(v), wb::ColumnType::F64)
-                        }
-                        Value::FieldValue(FieldValue::Boolean(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            (Column::Bool(v), wb::ColumnType::Bool)
-                        }
-                        Value::FieldValue(FieldValue::String(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            (Column::String(v), wb::ColumnType::String)
-                        }
-                    };
-                    self.columns.push(col);
-
-                    if let Some(builder) = builder {
-                        builder.add_schema_append(self.partition_id, self.id, val.id, wal_type);
-                    }
-
-                    (&mut self.columns[index], index)
-                }
-            };
-
-            ensure!(
-                column.matches_type(&val),
-                SchemaMismatch {
-                    column_id,
-                    existing_column_type: column.type_description(),
-                    inserted_value_type: val.value.type_description(),
-                }
-            );
-        }
-
-        // insert the actual values
-        for val in values {
-            let idx = self
-                .column_id_to_index
-                .get(&val.id)
-                .context(InsertError {})?;
-            let column = self.columns.get_mut(*idx).context(InsertError {})?;
-
-            match &val.value {
-                Value::TagValueId(val) => match column {
-                    Column::Tag(vals) => {
-                        if let Some(builder) = builder {
-                            builder.add_tag_value(u16::try_from(*idx).unwrap(), *val);
-                        }
-                        vals.push(Some(*val))
-                    }
-                    col => {
-                        return SchemaMismatch {
-                            column_id: *idx,
-                            existing_column_type: col.type_description(),
-                            inserted_value_type: "tag",
-                        }
-                        .fail()
-                    }
-                },
-                Value::FieldValue(field) => match (column, field) {
-                    (Column::Tag(_), _) => {
-                        return SchemaMismatch {
-                            column_id: *idx,
-                            existing_column_type: "tag",
-                            inserted_value_type: val.value.type_description(),
-                        }
-                        .fail()
-                    }
-                    (Column::String(vals), FieldValue::String(val)) => {
-                        if let Some(builder) = builder {
-                            builder.add_string_value(u16::try_from(*idx).unwrap(), val.as_str());
-                        }
-                        vals.push(Some(val.as_str().to_string()))
-                    }
-                    (Column::Bool(vals), FieldValue::Boolean(val)) => {
-                        if let Some(builder) = builder {
-                            builder.add_bool_value(u16::try_from(*idx).unwrap(), *val);
-                        }
-                        vals.push(Some(*val))
-                    }
-                    (Column::I64(vals), FieldValue::I64(val)) => {
-                        if let Some(builder) = builder {
-                            builder.add_i64_value(u16::try_from(*idx).unwrap(), *val);
-                        }
-                        vals.push(Some(*val))
-                    }
-                    (Column::F64(vals), FieldValue::F64(val)) => {
-                        if let Some(builder) = builder {
-                            builder.add_f64_value(u16::try_from(*idx).unwrap(), *val);
-                        }
-                        vals.push(Some(*val))
-                    }
-                    (column, _) => {
-                        return SchemaMismatch {
-                            column_id: *idx,
-                            existing_column_type: column.type_description(),
-                            inserted_value_type: val.value.type_description(),
-                        }
-                        .fail()
-                    }
-                },
-            }
-        }
-
-        if let Some(builder) = builder {
-            builder.add_row(self.partition_id, self.id);
-        }
-
-        // make sure all columns are of the same length
-        for col in &mut self.columns {
-            col.push_none_if_len_equal(row_count);
-        }
-
-        Ok(())
+        unimplemented!();
     }
 
     fn to_arrow<'a, F>(&self, lookup_id: F) -> Result<RecordBatch>
@@ -1259,46 +959,22 @@ impl WalEntryBuilder<'_> {
         }
     }
 
-    fn add_dictionary_entry(&mut self, partition_id: u32, value: &str, id: u32) {
-        println!("add_dictionary_entry {}, {}, {}", partition_id, value, id);
-        let value_offset = self.fbb.create_string(value);
-
-        let dictionary_add = wb::DictionaryAdd::create(
-            &mut self.fbb,
-            &wb::DictionaryAddArgs {
-                id,
-                partition_id,
-                value: Some(value_offset),
-            },
-        );
-
-        let entry = wb::WriteBufferEntry::create(
-            &mut self.fbb,
-            &wb::WriteBufferEntryArgs {
-                dictionary_add: Some(dictionary_add),
-                ..Default::default()
-            },
-        );
-
-        self.entries.push(entry);
-    }
-
     fn ensure_partition_exists(&mut self, id: u32, name: &str) {
         if !self.partitions.contains(&id) {
             self.add_partition_open(id, name);
         }
     }
 
-    fn add_partition_open(&mut self, id: u32, name: &str) {
-        println!("add_partition_open {}, {}", id, name);
-        self.partitions.insert(id);
-        let partition_name = self.fbb.create_string(&name);
+    fn add_partition_open(&mut self, generation: u32, key: &str) {
+        println!("add_partition_open {}, {}", generation, key);
+        self.partitions.insert(generation);
+        let partition_key = self.fbb.create_string(&key);
 
         let partition_open = wb::PartitionOpen::create(
             &mut self.fbb,
             &wb::PartitionOpenArgs {
-                id,
-                name: Some(partition_name),
+                generation,
+                key: Some(partition_key),
             },
         );
 
@@ -1313,47 +989,17 @@ impl WalEntryBuilder<'_> {
         self.entries.push(entry);
     }
 
-    fn add_schema_append(
-        &mut self,
-        partition_id: u32,
-        table_id: u32,
-        column_id: u32,
-        column_type: wb::ColumnType,
-    ) {
-        println!(
-            "add_schema_append {}, {}, {}, {:?}",
-            partition_id, table_id, column_id, column_type
-        );
-        let schema_append = wb::SchemaAppend::create(
-            &mut self.fbb,
-            &wb::SchemaAppendArgs {
-                partition_id,
-                table_id,
-                column_id,
-                column_type,
-            },
-        );
+    fn add_tag_value(&mut self, column: &str, value: &str) {
+        println!("add_tag_value {}", value);
+        let value = self.fbb.create_string(&value);
 
-        let entry = wb::WriteBufferEntry::create(
-            &mut self.fbb,
-            &wb::WriteBufferEntryArgs {
-                schema_append: Some(schema_append),
-                ..Default::default()
-            },
-        );
+        let tv = wb::TagValue::create(&mut self.fbb, &wb::TagValueArgs { value: Some(value) });
 
-        self.entries.push(entry);
+        self.add_value(column, wb::ColumnValue::TagValue, tv.as_union_value());
     }
 
-    fn add_tag_value(&mut self, column_index: u16, value: u32) {
-        println!("add_tag_value {}, {}", column_index, value);
-        let tv = wb::TagValue::create(&mut self.fbb, &wb::TagValueArgs { value });
-
-        self.add_value(column_index, wb::ColumnValue::TagValue, tv.as_union_value());
-    }
-
-    fn add_string_value(&mut self, column_index: u16, value: &str) {
-        println!("add_string_value {}, {}", column_index, value);
+    fn add_string_value(&mut self, column: &str, value: &str) {
+        println!("add_string_value {}, {}", column, value);
         let value_offset = self.fbb.create_string(value);
 
         let sv = wb::StringValue::create(
@@ -1364,32 +1010,32 @@ impl WalEntryBuilder<'_> {
         );
 
         self.add_value(
-            column_index,
+            column,
             wb::ColumnValue::StringValue,
             sv.as_union_value(),
         );
     }
 
-    fn add_f64_value(&mut self, column_index: u16, value: f64) {
-        println!("add_f64_value {}, {}", column_index, value);
+    fn add_f64_value(&mut self, column: &str, value: f64) {
+        println!("add_f64_value {}, {}", column, value);
         let fv = wb::F64Value::create(&mut self.fbb, &wb::F64ValueArgs { value });
 
-        self.add_value(column_index, wb::ColumnValue::F64Value, fv.as_union_value());
+        self.add_value(column, wb::ColumnValue::F64Value, fv.as_union_value());
     }
 
-    fn add_i64_value(&mut self, column_index: u16, value: i64) {
-        println!("add_i64_value {}, {}", column_index, value);
+    fn add_i64_value(&mut self, column: &str, value: i64) {
+        println!("add_i64_value {}, {}", column, value);
         let iv = wb::I64Value::create(&mut self.fbb, &wb::I64ValueArgs { value });
 
-        self.add_value(column_index, wb::ColumnValue::I64Value, iv.as_union_value());
+        self.add_value(column, wb::ColumnValue::I64Value, iv.as_union_value());
     }
 
-    fn add_bool_value(&mut self, column_index: u16, value: bool) {
-        println!("add_bool_value {}, {}", column_index, value);
+    fn add_bool_value(&mut self, column: &str, value: bool) {
+        println!("add_bool_value {}, {}", column, value);
         let bv = wb::BoolValue::create(&mut self.fbb, &wb::BoolValueArgs { value });
 
         self.add_value(
-            column_index,
+            column,
             wb::ColumnValue::BoolValue,
             bv.as_union_value(),
         );
@@ -1397,16 +1043,18 @@ impl WalEntryBuilder<'_> {
 
     fn add_value(
         &mut self,
-        column_index: u16,
+        column: &str,
         value_type: wb::ColumnValue,
         value: flatbuffers::WIPOffset<flatbuffers::UnionWIPOffset>,
     ) {
-        println!("add_value {}, {:?}", column_index, value_type);
+        println!("add_value {}, {:?}", column, value_type);
+
+        let column = self.fbb.create_string(column);
 
         let row_value = wb::Value::create(
             &mut self.fbb,
             &wb::ValueArgs {
-                column_index,
+                column: Some(column),
                 value_type,
                 value: Some(value),
             },
@@ -1415,16 +1063,16 @@ impl WalEntryBuilder<'_> {
         self.row_values.push(row_value);
     }
 
-    fn add_row(&mut self, partition_id: u32, table_id: u32) {
-        println!("add_row {}, {}", partition_id, table_id);
+    fn add_row(&mut self, partition_id: u32, table: &str) {
+        println!("add_row {}, {}", partition_id, table);
 
+        let table = self.fbb.create_string(table);
         let values_vec = self.fbb.create_vector(&self.row_values);
 
         let row = wb::Row::create(
             &mut self.fbb,
             &wb::RowArgs {
-                partition_id,
-                table_id,
+                table: Some(table),
                 values: Some(values_vec),
             },
         );
