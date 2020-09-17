@@ -631,8 +631,7 @@ impl Partition {
         let table_name = line.series.measurement.as_str();
         let partition_generation = self.generation;
 
-        let column_count =
-            1 + line.field_set.len() + line.series.tag_set.as_ref().map(|t| t.len()).unwrap_or(0);
+        let column_count = line.column_count();
         let mut values: Vec<ColumnValue<'_>> = Vec::with_capacity(column_count);
 
         if let Some(tags) = &line.series.tag_set {
