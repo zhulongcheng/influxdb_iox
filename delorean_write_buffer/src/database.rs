@@ -472,6 +472,10 @@ impl Database for Db {
         // TODO: rollback writes to partitions on validation failures
         for line in lines {
             let key = self.partition_key(line);
+            // TODO: could this be a hashmap lookup instead of iteration, or no because of the
+            // way partitioning rules might work?
+            // TODO: or could we group lines by key and share the results of looking up the
+            // partition? or could that make insertion go in an undesired order?
             match partitions.iter_mut().find(|p| p.should_write(&key)) {
                 Some(p) => p.write_line(line, &mut builder)?,
                 None => {
