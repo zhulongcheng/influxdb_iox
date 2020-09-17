@@ -80,9 +80,6 @@ pub enum Error {
     ))]
     WalPartitionError { partition_generation: u32, table: String },
 
-    #[snafu(display("Error recovering write from WAL, column id {} not found", column_id))]
-    WalColumnError { column_id: u16 },
-
     #[snafu(display("Error creating db dir for {}: {}", database, err))]
     CreatingWalDir {
         database: String,
@@ -374,14 +371,14 @@ pub enum RestorationError {
     TableNotFound { table: String, partition: u32 },
 
     #[snafu(display("Column {} not found", column))]
-    ColumnNotFound { column: u32 },
+    ColumnNotFound { column: String },
 
     #[snafu(display(
         "Column {} said it was type {} but extracting a value of that type failed",
         column,
         expected
     ))]
-    WalValueTypeMismatch { column: u32, expected: String },
+    WalValueTypeMismatch { column: String, expected: String },
 
     #[snafu(display(
         "Column type mismatch for column {}: can't insert {} into column with type {}",
@@ -390,7 +387,7 @@ pub enum RestorationError {
         existing_column_type
     ))]
     ColumnTypeMismatch {
-        column: usize,
+        column: String,
         existing_column_type: String,
         inserted_value_type: String,
     },
@@ -429,6 +426,10 @@ pub fn restore_partitions_from_wal(
                 } else if let Some(_pf) = entry.partition_snapshot_finished() {
                     todo!("handle partition snapshot finished")
                 } else if let Some(row) = entry.write() {
+                    // find the partition
+                    // find or create the table
+                    // add the row to the table
+
                     println!("restore write {:?}", row.table());
                     todo!("handle restore write");
                 }
@@ -737,11 +738,65 @@ impl Table {
         }
     }
 
+    // TODO: can this be refactored to share some code with add_row?
     fn add_wal_row(
         &mut self,
         values: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
     ) -> Result<(), RestorationError> {
-        unimplemented!();
+        let row_count = self.row_count();
+
+        for value in values {
+            let column_name = value.column().expect("WAL Value should have column");
+            let column = self.columns.get_mut(column_name).context(ColumnNotFound { column: column_name })?;
+
+            match (column, value.value_type()) {
+                (Column::Tag(vals), wb::ColumnValue::TagValue) => {
+                     let v = value.value_as_tag_value().context(WalValueTypeMismatch {
+                         column: column_name,
+                         expected: "tag",
+                     })?;
+                     vals.push(Some(v.value().unwrap().to_string()));
+                 }
+                 (Column::Bool(vals), wb::ColumnValue::BoolValue) => {
+                     let v = value.value_as_bool_value().context(WalValueTypeMismatch {
+                         column: column_name,
+                         expected: "bool",
+                     })?;
+                     vals.push(Some(v.value()));
+                 }
+                 (Column::String(vals), wb::ColumnValue::StringValue) => {
+                     let v = value.value_as_string_value().context(WalValueTypeMismatch {
+                         column: column_name,
+                         expected: "String",
+                     })?;
+                     vals.push(Some(v.value().unwrap().to_string()));
+                 }
+                 (Column::I64(vals), wb::ColumnValue::I64Value) => {
+                     let v = value.value_as_i64value().context(WalValueTypeMismatch {
+                         column: column_name,
+                         expected: "i64",
+                     })?;
+                     vals.push(Some(v.value()));
+                 }
+                 (Column::F64(vals), wb::ColumnValue::F64Value) => {
+                     let v = value.value_as_f64value().context(WalValueTypeMismatch {
+                         column: column_name,
+                         expected: "f64",
+                     })?;
+                     vals.push(Some(v.value()));
+                 }
+                 (existing_column, inserted_value) => {
+                     return ColumnTypeMismatch {
+                         column: column_name,
+                         existing_column_type: existing_column.type_description(),
+                         inserted_value_type: type_description(inserted_value),
+                     }
+                     .fail()
+                 }
+            }
+        }
+
+        Ok(())
     }
 
     fn row_count(&self) -> usize {
