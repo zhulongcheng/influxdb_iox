@@ -28,9 +28,6 @@ use sqlparser::{
     dialect::GenericDialect,
     parser::Parser,
 };
-use string_interner::{
-    backend::StringBackend, DefaultHashBuilder, DefaultSymbol, StringInterner, Symbol,
-};
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -124,12 +121,6 @@ pub enum Error {
 
     #[snafu(display("arrow conversion error"))]
     ArrowError { source: arrow::error::ArrowError },
-
-    #[snafu(display("dictionary lookup error on id {}", id))]
-    DictionaryIdLookupError { id: u32 },
-
-    #[snafu(display("dictionary lookup error for value {}", value))]
-    DictionaryValueLookupError { value: String },
 
     /// This error "should not happen" and is not expected. However,
     /// for robustness, rather than panic! we handle it gracefully
@@ -347,12 +338,11 @@ impl Db {
 
         let elapsed = now.elapsed();
         info!(
-            "{} database loaded {} rows in {:?} with {} dictionary adds in {} tables",
+            "{} database loaded {} rows in {} tables in {:?} ",
             &name,
             stats.row_count,
-            elapsed,
-            stats.dict_values,
             stats.tables.len(),
+            elapsed,
         );
 
         info!(
@@ -454,7 +444,6 @@ pub fn restore_partitions_from_wal(
 #[derive(Default, Debug)]
 pub struct RestorationStats {
     row_count: usize,
-    dict_values: usize,
     tables: BTreeSet<u32>,
 }
 
@@ -606,10 +595,6 @@ struct ArrowTable {
 pub struct Partition {
     name: String,
     generation: u32,
-    /// `dictionary` maps &str -> u32. The u32s are used in place of
-    /// String or str to avoid slow string operations. The same
-    /// dictionary is used for table names, tag and field values
-    dictionary: StringInterner<DefaultSymbol, StringBackend<DefaultSymbol>, DefaultHashBuilder>,
     /// tables is a map of the table name to the table
     tables: HashMap<String, Table>,
     is_open: bool,
@@ -620,25 +605,9 @@ impl Partition {
         Self {
             name: name.into(),
             generation,
-            dictionary: StringInterner::new(),
             tables: HashMap::new(),
             is_open: true,
         }
-    }
-
-    /// Creates  a new symbol corresponding to `name` if one does not already exist
-    fn intern_new_dict_entry(&mut self, name: &str) {
-        self.dictionary.get_or_intern(name);
-    }
-
-    /// returns the str in self.dictionary that corresponds to `id`,
-    /// if any. Returns an error if no such id is found
-    fn lookup_id(&self, id: u32) -> Result<&str> {
-        let symbol =
-            Symbol::try_from_usize(id as usize).expect("to be able to convert u32 to symbol");
-        self.dictionary
-            .resolve(symbol)
-            .context(DictionaryIdLookupError { id })
     }
 
     fn add_wal_row(
@@ -701,16 +670,6 @@ impl Partition {
         Ok(())
     }
 
-    /// Returns the id corresponding to value, or an error if no such
-    /// symbol exists. Note: this does not add to the dictionary as
-    /// doing so requires updating the WAL as well.
-    fn lookup_value(&self, value: &str) -> Result<u32> {
-        self.dictionary
-            .get(value)
-            .map(symbol_to_u32)
-            .context(DictionaryValueLookupError { value })
-    }
-
     fn should_write(&self, key: &str) -> bool {
         self.name.starts_with(key) && self.is_open
     }
@@ -720,7 +679,7 @@ impl Partition {
             table: table_name,
             partition: self.generation,
         })?;
-        table.to_arrow(|id| self.lookup_id(id))
+        table.to_arrow()
     }
 }
 
@@ -747,10 +706,6 @@ impl<'a> Value<'a> {
             Value::FieldValue(FieldValue::String(_)) => "String",
         }
     }
-}
-
-fn symbol_to_u32(sym: DefaultSymbol) -> u32 {
-    sym.to_usize() as u32
 }
 
 fn type_description(value: wb::ColumnValue) -> &'static str {
@@ -867,10 +822,7 @@ impl Table {
         Ok(())
     }
 
-    fn to_arrow<'a, F>(&self, lookup_id: F) -> Result<RecordBatch>
-    where
-        F: Fn(u32) -> Result<&'a str>,
-    {
+    fn to_arrow(&self) -> Result<RecordBatch> {
         let mut fields = Vec::with_capacity(self.columns.len());
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(self.columns.len());
 
