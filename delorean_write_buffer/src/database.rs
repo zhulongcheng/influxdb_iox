@@ -684,6 +684,10 @@ impl Partition {
         line: &ParsedLine<'_>,
         builder: &mut Option<WalEntryBuilder<'_>>,
     ) -> Result<()> {
+        if let Some(b) = builder.as_mut() {
+            b.ensure_partition_exists(self.generation, &self.name);
+        }
+
         let table_name = line.series.measurement.as_str();
         let partition_generation = self.generation;
 
@@ -1053,6 +1057,12 @@ impl WalEntryBuilder<'_> {
             partitions: BTreeSet::new(),
         }
     }
+
+    fn ensure_partition_exists(&mut self, generation: u32, name: &str) {
+         if !self.partitions.contains(&generation) {
+             self.add_partition_open(generation, name);
+         }
+     }
 
     fn add_partition_open(&mut self, generation: u32, key: &str) {
         println!("add_partition_open {}, {}", generation, key);
