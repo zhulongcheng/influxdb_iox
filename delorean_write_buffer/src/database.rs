@@ -110,8 +110,8 @@ pub enum Error {
     #[snafu(display("Table {} not found in partition {}", table, partition))]
     TableNotFoundInPartition { table: String, partition: u32 },
 
-    #[snafu(display("Internal Error: Column {} not found", column_id))]
-    InternaColumnNotFound { column_id: u32 },
+    #[snafu(display("Internal Error: Column {} not found", column))]
+    InternalColumnNotFound { column: String },
 
     #[snafu(display("Unexpected insert error"))]
     InsertError,
@@ -500,9 +500,24 @@ impl Database for Db {
         // TODO: Cache this information to avoid creating this each time
         let partitions = self.partitions.read().await;
         let mut table_names = BTreeSet::new();
+
         for partition in partitions.iter() {
-            for table_name in partition.tables.keys() {
-                table_names.insert(table_name.into());
+            for (table_name, table) in &partition.tables {
+                let add_table_name = match range {
+                    Some(range)
+                        if table
+                            .column(TIME_COLUMN_NAME)?
+                            .has_i64_range(range.start, range.end)? =>
+                    {
+                        true
+                    }
+                    Some(_) => false,
+                    None => true,
+                };
+
+                if add_table_name {
+                    table_names.insert(table_name.into());
+                }
             }
         }
         Ok(Arc::new(table_names))
@@ -806,6 +821,14 @@ impl Table {
 
     fn row_count(&self) -> usize {
         self.columns.iter().next().map_or(0, |(_, v)| v.len())
+    }
+
+    /// Returns a reference to the specified column
+    fn column(&self, column: &str) -> Result<&Column> {
+        Ok(self
+            .columns
+            .get(column)
+            .context(InternalColumnNotFound { column })?)
     }
 
     fn add_row(
