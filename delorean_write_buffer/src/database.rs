@@ -877,7 +877,9 @@ impl Table {
         }
 
         // send the values to the WAL
-
+        if let Some(builder) = builder {
+            builder.add_row(&self.name, values);
+        }
 
         // insert the actual values
         self.add_row_unchecked(row_count, values)?;
@@ -1096,10 +1098,31 @@ impl WalEntryBuilder<'_> {
         self.row_values.push(row_value);
     }
 
-    fn add_row(&mut self, partition_generation: u32, table: &str) {
-        println!("add_row {}, {}", partition_generation, table);
-
+    fn add_row(&mut self, table: &str, values: &[ColumnValue<'_>]) {
         let table = self.fbb.create_string(table);
+
+        self.row_values = Vec::with_capacity(values.len());
+
+        for value in values {
+            match value.value {
+                Value::TagValue(v) => {
+                    self.add_tag_value(value.column, v);
+                }
+                Value::FieldValue(FieldValue::I64(v)) => {
+                    self.add_i64_value(value.column, *v);
+                }
+                Value::FieldValue(FieldValue::F64(v)) => {
+                    self.add_f64_value(value.column, *v);
+                }
+                Value::FieldValue(FieldValue::Boolean(v)) => {
+                    self.add_bool_value(value.column, *v);
+                }
+                Value::FieldValue(FieldValue::String(v)) => {
+                    self.add_string_value(value.column, v);
+                }
+            }
+        }
+
         let values_vec = self.fbb.create_vector(&self.row_values);
 
         let row = wb::Row::create(
