@@ -78,7 +78,10 @@ pub enum Error {
         partition_generation,
         table
     ))]
-    WalPartitionError { partition_generation: u32, table: String },
+    WalPartitionError {
+        partition_generation: u32,
+        table: String,
+    },
 
     #[snafu(display("Error creating db dir for {}: {}", database, err))]
     CreatingWalDir {
@@ -86,15 +89,8 @@ pub enum Error {
         err: std::io::Error,
     },
 
-    #[snafu(display(
-        "Schema mismatch: for column {}: {}",
-        column,
-        source,
-    ))]
-    SchemaMismatch {
-        column: String,
-        source: ColumnError,
-    },
+    #[snafu(display("Schema mismatch: for column {}: {}", column, source,))]
+    SchemaMismatch { column: String, source: ColumnError },
 
     #[snafu(display("Database {} doesn't exist", database))]
     DatabaseNotFound { database: String },
@@ -363,7 +359,7 @@ pub enum RestorationError {
     WalEntryRead { source: delorean_wal::Error },
 
     #[snafu(display("Partition {} not found", partition))]
-    PartitionNotFound { partition: u32 },
+    PartitionNotFound { partition: String },
 
     #[snafu(display("Table {} not found in partition {}", table, partition))]
     TableNotFound { table: String, partition: u32 },
@@ -411,25 +407,43 @@ pub fn restore_partitions_from_wal(
             for entry in entries {
                 if let Some(po) = entry.partition_open() {
                     let generation = po.generation();
-                    let key = po.key().expect("restored partitions should have keys");
+                    let key = po
+                        .key()
+                        .expect("restored partitions should have keys")
+                        .to_string();
 
-                    println!("restore partition open: generation = {}, key = {}", generation, key);
+                    println!(
+                        "restore partition open: generation = {}, key = {}",
+                        generation, key
+                    );
                     if generation > max_partition_generation {
                         max_partition_generation = generation;
                     }
 
-                    partitions.entry(generation).or_insert_with(|| Partition::new(generation, key));
+                    // raw entry opportunity
+                    partitions
+                        .entry(key.clone())
+                        .or_insert_with(|| Partition::new(generation, key));
                 } else if let Some(_ps) = entry.partition_snapshot_started() {
                     todo!("handle partition snapshot");
                 } else if let Some(_pf) = entry.partition_snapshot_finished() {
                     todo!("handle partition snapshot finished")
                 } else if let Some(row) = entry.write() {
-                    // find the partition
-                    // find or create the table
-                    // add the row to the table
+                    let values = row.values().expect("restored rows should have values");
+                    let partition_key = partition_key(&values);
 
-                    println!("restore write {:?}", row.table());
-                    todo!("handle restore write");
+                    let partition =
+                        partitions
+                            .get_mut(&partition_key)
+                            .context(PartitionNotFound {
+                                partition: partition_key,
+                            })?;
+
+                    stats.row_count += 1;
+                    partition.add_wal_row(
+                        row.table().expect("restored rows should have table"),
+                        &values,
+                    )?;
                 }
             }
         }
@@ -467,7 +481,9 @@ impl Database for Db {
             match partitions.iter_mut().find(|p| p.should_write(&key)) {
                 Some(p) => p.write_line(line, &mut builder)?,
                 None => {
-                    let generation = self.next_partition_generation.fetch_add(1, Ordering::Relaxed);
+                    let generation = self
+                        .next_partition_generation
+                        .fetch_add(1, Ordering::Relaxed);
 
                     if let Some(builder) = &mut builder {
                         builder.add_partition_open(generation, &key);
@@ -481,7 +497,9 @@ impl Database for Db {
         }
 
         if let Some(wal) = &self.wal_details {
-            let data = builder.expect("Where there's wal_details, there's a builder").data();
+            let data = builder
+                .expect("Where there's wal_details, there's a builder")
+                .data();
 
             wal.write_and_sync(data).await.context(WritingWal {
                 database: self.name.clone(),
@@ -599,6 +617,24 @@ impl Db {
     }
 }
 
+/// Computes the partition key from a row being restored from the WAL.
+/// TODO: This can't live on `Db`, because when we're restoring from the WAL, we don't have a `Db`
+/// yet. Where do the partitioning rules come from?
+fn partition_key(
+    row: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
+) -> String {
+    // TODO - wire this up to use partitioning rules, for now just partition by day
+    let ts = row
+        .iter()
+        .find(|v| v.column().expect("restored row values must have column") == TIME_COLUMN_NAME)
+        .expect("restored rows must have timestamp")
+        .value_as_i64value()
+        .expect("restored timestamp rows must be i64")
+        .value();
+    let dt = Utc.timestamp_nanos(ts);
+    dt.format("%Y-%m-%dT%H").to_string()
+}
+
 struct ArrowTable {
     name: String,
     schema: Arc<ArrowSchema>,
@@ -630,10 +666,10 @@ impl Partition {
         values: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
     ) -> Result<(), RestorationError> {
         println!("add_wal_row tables = {:?}", self.tables);
-        let t = self
-            .tables
-            .get_mut(table)
-            .context(TableNotFound { table: table , partition: self.generation })?;
+        let t = self.tables.get_mut(table).context(TableNotFound {
+            table: table,
+            partition: self.generation,
+        })?;
         t.add_wal_row(values)
     }
 
@@ -690,10 +726,13 @@ impl Partition {
     }
 
     fn table_to_arrow(&self, table_name: &str) -> Result<RecordBatch> {
-        let table = self.tables.get(table_name).context(TableNotFoundInPartition {
-            table: table_name,
-            partition: self.generation,
-        })?;
+        let table = self
+            .tables
+            .get(table_name)
+            .context(TableNotFoundInPartition {
+                table: table_name,
+                partition: self.generation,
+            })?;
         table.to_arrow()
     }
 }
@@ -760,52 +799,56 @@ impl Table {
 
         for value in values {
             let column_name = value.column().expect("WAL Value should have column");
-            let column = self.columns.get_mut(column_name).context(ColumnNotFound { column: column_name })?;
+            let column = self.columns.get_mut(column_name).context(ColumnNotFound {
+                column: column_name,
+            })?;
 
             match (column, value.value_type()) {
                 (Column::Tag(vals), wb::ColumnValue::TagValue) => {
-                     let v = value.value_as_tag_value().context(WalValueTypeMismatch {
-                         column: column_name,
-                         expected: "tag",
-                     })?;
-                     vals.push(Some(v.value().unwrap().to_string()));
-                 }
-                 (Column::Bool(vals), wb::ColumnValue::BoolValue) => {
-                     let v = value.value_as_bool_value().context(WalValueTypeMismatch {
-                         column: column_name,
-                         expected: "bool",
-                     })?;
-                     vals.push(Some(v.value()));
-                 }
-                 (Column::String(vals), wb::ColumnValue::StringValue) => {
-                     let v = value.value_as_string_value().context(WalValueTypeMismatch {
-                         column: column_name,
-                         expected: "String",
-                     })?;
-                     vals.push(Some(v.value().unwrap().to_string()));
-                 }
-                 (Column::I64(vals), wb::ColumnValue::I64Value) => {
-                     let v = value.value_as_i64value().context(WalValueTypeMismatch {
-                         column: column_name,
-                         expected: "i64",
-                     })?;
-                     vals.push(Some(v.value()));
-                 }
-                 (Column::F64(vals), wb::ColumnValue::F64Value) => {
-                     let v = value.value_as_f64value().context(WalValueTypeMismatch {
-                         column: column_name,
-                         expected: "f64",
-                     })?;
-                     vals.push(Some(v.value()));
-                 }
-                 (existing_column, inserted_value) => {
-                     return ColumnTypeMismatch {
-                         column: column_name,
-                         existing_column_type: existing_column.type_description(),
-                         inserted_value_type: type_description(inserted_value),
-                     }
-                     .fail()
-                 }
+                    let v = value.value_as_tag_value().context(WalValueTypeMismatch {
+                        column: column_name,
+                        expected: "tag",
+                    })?;
+                    vals.push(Some(v.value().unwrap().to_string()));
+                }
+                (Column::Bool(vals), wb::ColumnValue::BoolValue) => {
+                    let v = value.value_as_bool_value().context(WalValueTypeMismatch {
+                        column: column_name,
+                        expected: "bool",
+                    })?;
+                    vals.push(Some(v.value()));
+                }
+                (Column::String(vals), wb::ColumnValue::StringValue) => {
+                    let v = value
+                        .value_as_string_value()
+                        .context(WalValueTypeMismatch {
+                            column: column_name,
+                            expected: "String",
+                        })?;
+                    vals.push(Some(v.value().unwrap().to_string()));
+                }
+                (Column::I64(vals), wb::ColumnValue::I64Value) => {
+                    let v = value.value_as_i64value().context(WalValueTypeMismatch {
+                        column: column_name,
+                        expected: "i64",
+                    })?;
+                    vals.push(Some(v.value()));
+                }
+                (Column::F64(vals), wb::ColumnValue::F64Value) => {
+                    let v = value.value_as_f64value().context(WalValueTypeMismatch {
+                        column: column_name,
+                        expected: "f64",
+                    })?;
+                    vals.push(Some(v.value()));
+                }
+                (existing_column, inserted_value) => {
+                    return ColumnTypeMismatch {
+                        column: column_name,
+                        existing_column_type: existing_column.type_description(),
+                        inserted_value_type: type_description(inserted_value),
+                    }
+                    .fail()
+                }
             }
         }
 
@@ -871,7 +914,9 @@ impl Table {
                     };
 
                     self.columns.insert(col_val.column.into(), column_values);
-                    self.columns.get(col_val.column).expect("just inserted column")
+                    self.columns
+                        .get(col_val.column)
+                        .expect("just inserted column")
                 }
             };
         }
@@ -891,13 +936,16 @@ impl Table {
     /// one, unlike add_row.
     fn add_row_unchecked(&mut self, row_count: usize, values: &[ColumnValue<'_>]) -> Result<()> {
         for col_val in values {
-            let column = self.columns
+            let column = self
+                .columns
                 .get_mut(col_val.column)
-                .context(InternalColumnNotFound { column: col_val.column })?;
+                .context(InternalColumnNotFound {
+                    column: col_val.column,
+                })?;
 
             column.push(&col_val.value).context(SchemaMismatch {
-                        column: col_val.column
-                        })?;
+                column: col_val.column,
+            })?;
         }
 
         // make sure all the columns are of the same length
@@ -1044,11 +1092,7 @@ impl WalEntryBuilder<'_> {
             },
         );
 
-        self.add_value(
-            column,
-            wb::ColumnValue::StringValue,
-            sv.as_union_value(),
-        );
+        self.add_value(column, wb::ColumnValue::StringValue, sv.as_union_value());
     }
 
     fn add_f64_value(&mut self, column: &str, value: f64) {
@@ -1069,11 +1113,7 @@ impl WalEntryBuilder<'_> {
         println!("add_bool_value {}, {}", column, value);
         let bv = wb::BoolValue::create(&mut self.fbb, &wb::BoolValueArgs { value });
 
-        self.add_value(
-            column,
-            wb::ColumnValue::BoolValue,
-            bv.as_union_value(),
-        );
+        self.add_value(column, wb::ColumnValue::BoolValue, bv.as_union_value());
     }
 
     fn add_value(
@@ -1170,10 +1210,7 @@ impl WalEntryBuilder<'_> {
 #[derive(Debug, Snafu)]
 pub enum ColumnError {
     #[snafu(display("Types did not match. Expected: {}, got: {}", expected, got))]
-    TypeMismatch {
-        expected: String,
-        got: String,
-    },
+    TypeMismatch { expected: String, got: String },
 }
 
 #[derive(Debug)]
@@ -1227,11 +1264,21 @@ impl Column {
     fn push(&mut self, value: &Value<'_>) -> Result<(), ColumnError> {
         match (self, value) {
             (Self::Tag(vals), Value::TagValue(val)) => vals.push(Some(val.to_string())),
-            (Self::String(vals), Value::FieldValue(FieldValue::String(val))) => vals.push(Some(val.to_string())),
-            (Self::Bool(vals), Value::FieldValue(FieldValue::Boolean(val))) => vals.push(Some(*val)),
+            (Self::String(vals), Value::FieldValue(FieldValue::String(val))) => {
+                vals.push(Some(val.to_string()))
+            }
+            (Self::Bool(vals), Value::FieldValue(FieldValue::Boolean(val))) => {
+                vals.push(Some(*val))
+            }
             (Self::I64(vals), Value::FieldValue(FieldValue::I64(val))) => vals.push(Some(*val)),
             (Self::F64(vals), Value::FieldValue(FieldValue::F64(val))) => vals.push(Some(*val)),
-            (column, value) => return TypeMismatch { expected: column.type_description(), got: value.type_description()}.fail(),
+            (column, value) => {
+                return TypeMismatch {
+                    expected: column.type_description(),
+                    got: value.type_description(),
+                }
+                .fail()
+            }
         }
 
         Ok(())
