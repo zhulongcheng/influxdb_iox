@@ -430,6 +430,7 @@ pub fn restore_partitions_from_wal(
                     todo!("handle partition snapshot finished")
                 } else if let Some(row) = entry.write() {
                     let values = row.values().expect("restored rows should have values");
+                    let table = row.table().expect("restored rows should have table");
                     let partition_key = partition_key(&values);
 
                     let partition =
@@ -440,8 +441,10 @@ pub fn restore_partitions_from_wal(
                             })?;
 
                     stats.row_count += 1;
+                    stats.tables.insert(table.to_string());
+
                     partition.add_wal_row(
-                        row.table().expect("restored rows should have table"),
+                        table,
                         &values,
                     )?;
                 }
@@ -457,7 +460,7 @@ pub fn restore_partitions_from_wal(
 #[derive(Default, Debug)]
 pub struct RestorationStats {
     row_count: usize,
-    tables: BTreeSet<u32>,
+    tables: BTreeSet<String>,
 }
 
 #[async_trait]
@@ -666,10 +669,8 @@ impl Partition {
         values: &flatbuffers::Vector<'_, flatbuffers::ForwardsUOffset<wb::Value<'_>>>,
     ) -> Result<(), RestorationError> {
         println!("add_wal_row tables = {:?}", self.tables);
-        let t = self.tables.get_mut(table).context(TableNotFound {
-            table: table,
-            partition: self.generation,
-        })?;
+        // raw entry opportunity
+        let t = self.tables.entry(table.to_string()).or_insert_with(|| Table::new(table));
         t.add_wal_row(values)
     }
 
