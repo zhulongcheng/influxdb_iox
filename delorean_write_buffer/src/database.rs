@@ -1255,8 +1255,8 @@ mod tests {
     type TestError = Box<dyn std::error::Error + Send + Sync + 'static>;
     type Result<T = (), E = TestError> = std::result::Result<T, E>;
 
-    fn to_set(v: Vec<&str>) -> BTreeSet<String> {
-        v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>()
+    fn to_set(v: &[&str]) -> BTreeSet<String> {
+        v.iter().map(|s| s.to_string()).collect()
     }
 
     #[test]
@@ -1313,7 +1313,7 @@ mod tests {
         let db = Db::try_with_wal("mydb", &mut dir).await?;
 
         // no tables initially
-        assert_eq!(*db.table_names(None).await?, BTreeSet::new());
+        assert!(db.table_names(None).await?.is_empty());
 
         // write two different tables
         let lines: Vec<_> =
@@ -1323,7 +1323,7 @@ mod tests {
         db.write_lines(&lines).await?;
 
         // Now, we should see the two tables
-        assert_eq!(*db.table_names(None).await?, to_set(vec!["cpu", "disk"]));
+        assert_eq!(*db.table_names(None).await?, to_set(&["cpu", "disk"]));
 
         Ok(())
     }
@@ -1345,25 +1345,25 @@ mod tests {
 
         // Cover all times
         let range = Some(TimestampRange { start: 0, end: 200 });
-        assert_eq!(*db.table_names(range).await?, to_set(vec!["cpu", "disk"]));
+        assert_eq!(*db.table_names(range).await?, to_set(&["cpu", "disk"]));
 
         // Right before disk
         let range = Some(TimestampRange { start: 0, end: 199 });
-        assert_eq!(*db.table_names(range).await?, to_set(vec!["cpu"]));
+        assert_eq!(*db.table_names(range).await?, to_set(&["cpu"]));
 
         // only one point of cpu
         let range = Some(TimestampRange {
             start: 50,
             end: 100,
         });
-        assert_eq!(*db.table_names(range).await?, to_set(vec!["cpu"]));
+        assert_eq!(*db.table_names(range).await?, to_set(&["cpu"]));
 
         // no ranges
         let range = Some(TimestampRange {
             start: 250,
             end: 350,
         });
-        assert_eq!(*db.table_names(range).await?, to_set(vec![]));
+        assert!(db.table_names(range).await?.is_empty());
 
         Ok(())
     }
