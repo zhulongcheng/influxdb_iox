@@ -22,7 +22,7 @@ use datafusion::{
     datasource::MemTable, error::ExecutionError, execution::context::ExecutionContext,
 };
 use hashlink::LinkedHashMap;
-use snafu::{ensure, OptionExt, ResultExt, Snafu};
+use snafu::{OptionExt, ResultExt, Snafu};
 use sqlparser::{
     ast::{SetExpr, Statement, TableFactor},
     dialect::GenericDialect,
@@ -385,6 +385,11 @@ pub enum RestorationError {
         existing_column_type: String,
         inserted_value_type: String,
     },
+
+    #[snafu(display("Don't know how to insert a column of type {}", inserted_value_type))]
+    UnknownColumnType {
+        inserted_value_type: String,
+    }
 }
 
 /// Given a set of WAL entries, restore them into a set of Partitions.
@@ -800,9 +805,15 @@ impl Table {
 
         for value in values {
             let column_name = value.column().expect("WAL Value should have column");
-            let column = self.columns.get_mut(column_name).context(ColumnNotFound {
-                column: column_name,
-            })?;
+
+            // Do this to avoid cloning the string if not needed and handle the error that might
+            // happen when creating a column
+            if !self.columns.contains_key(column_name) {
+                let column = Column::new_from_wal(row_count, value.value_type())?;
+                self.columns.insert(column_name.to_string(), column);
+            }
+
+            let column = self.columns.get_mut(column_name).expect("column existed or was just created");
 
             match (column, value.value_type()) {
                 (Column::Tag(vals), wb::ColumnValue::TagValue) => {
@@ -882,43 +893,37 @@ impl Table {
 
         // insert new columns
         for col_val in values {
-            let column = match self.columns.get(col_val.column) {
-                Some(col) => col,
-                None => {
-                    // Add the column and make all values for existing rows None
-                    let column_values = match col_val.value {
-                        Value::TagValue(_) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            Column::Tag(v)
-                        }
-                        Value::FieldValue(FieldValue::I64(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            Column::I64(v)
-                        }
-                        Value::FieldValue(FieldValue::F64(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            Column::F64(v)
-                        }
-                        Value::FieldValue(FieldValue::Boolean(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            Column::Bool(v)
-                        }
-                        Value::FieldValue(FieldValue::String(_)) => {
-                            let mut v = Vec::with_capacity(row_count + 1);
-                            v.resize_with(row_count, || None);
-                            Column::String(v)
-                        }
-                    };
+            if !self.columns.contains_key(col_val.column) {
+                // Add the column and make all values for existing rows None
+                let column_values = match col_val.value {
+                    Value::TagValue(_) => {
+                        let mut v = Vec::with_capacity(row_count + 1);
+                        v.resize_with(row_count, || None);
+                        Column::Tag(v)
+                    }
+                    Value::FieldValue(FieldValue::I64(_)) => {
+                        let mut v = Vec::with_capacity(row_count + 1);
+                        v.resize_with(row_count, || None);
+                        Column::I64(v)
+                    }
+                    Value::FieldValue(FieldValue::F64(_)) => {
+                        let mut v = Vec::with_capacity(row_count + 1);
+                        v.resize_with(row_count, || None);
+                        Column::F64(v)
+                    }
+                    Value::FieldValue(FieldValue::Boolean(_)) => {
+                        let mut v = Vec::with_capacity(row_count + 1);
+                        v.resize_with(row_count, || None);
+                        Column::Bool(v)
+                    }
+                    Value::FieldValue(FieldValue::String(_)) => {
+                        let mut v = Vec::with_capacity(row_count + 1);
+                        v.resize_with(row_count, || None);
+                        Column::String(v)
+                    }
+                };
 
-                    self.columns.insert(col_val.column.into(), column_values);
-                    self.columns
-                        .get(col_val.column)
-                        .expect("just inserted column")
-                }
+                self.columns.insert(col_val.column.into(), column_values);
             };
         }
 
@@ -1227,6 +1232,19 @@ enum Column {
 }
 
 impl Column {
+    fn new_from_wal(capacity: usize, value_type: wb::ColumnValue) -> Result<Self, RestorationError> {
+        use wb::ColumnValue::*;
+
+        Ok(match value_type {
+            F64Value => Self::F64(vec![None; capacity]),
+            I64Value => Self::I64(vec![None; capacity]),
+            StringValue => Self::String(vec![None; capacity]),
+            BoolValue => Self::Bool(vec![None; capacity]),
+            TagValue => Self::Tag(vec![None; capacity]),
+            _ => return UnknownColumnType { inserted_value_type: type_description(value_type) }.fail(),
+        })
+    }
+
     fn len(&self) -> usize {
         match self {
             Self::F64(v) => v.len(),
@@ -1244,21 +1262,6 @@ impl Column {
             Self::String(_) => "String",
             Self::Bool(_) => "bool",
             Self::Tag(_) => "tag",
-        }
-    }
-
-    // TODO: have type mismatches return helpful error
-    fn matches_type(&self, val: &ColumnValue<'_>) -> bool {
-        match (self, &val.value) {
-            (Self::Tag(_), Value::TagValue(_)) => true,
-            (col, Value::FieldValue(field)) => match (col, field) {
-                (Self::F64(_), FieldValue::F64(_)) => true,
-                (Self::I64(_), FieldValue::I64(_)) => true,
-                (Self::Bool(_), FieldValue::Boolean(_)) => true,
-                (Self::String(_), FieldValue::String(_)) => true,
-                _ => false,
-            },
-            _ => false,
         }
     }
 
