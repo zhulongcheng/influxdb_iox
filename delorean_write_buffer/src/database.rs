@@ -1622,11 +1622,11 @@ mod tests {
             };
 
             // some cpu
-            let smaller_cpu_table = r#"+--------+------+------+-------+-------------+-------+------+---------+-----------+
-| region | host | user | other | str         | b     | time | new_tag | new_field |
-+--------+------+------+-------+-------------+-------+------+---------+-----------+
-|        | A    | 0    | 0     |             | false | 20   | foo     | 15.1      |
-+--------+------+------+-------+-------------+-------+------+---------+-----------+
+            let smaller_cpu_table = r#"+------+---------+-----------+------+
+| host | new_tag | new_field | time |
++------+---------+-----------+------+
+| A    | foo     | 15.1      | 20   |
++------+---------+-----------+------+
 "#;
             let partitions = db.table_to_arrow("cpu", &["region", "host"]).await?;
             assert_table_eq(smaller_cpu_table, &partitions);
