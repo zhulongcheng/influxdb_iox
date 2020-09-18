@@ -87,15 +87,13 @@ pub enum Error {
     },
 
     #[snafu(display(
-        "Schema mismatch: for column {}: can't insert {} into column with type {}",
+        "Schema mismatch: for column {}: {}",
         column,
-        inserted_value_type,
-        existing_column_type
+        source,
     ))]
     SchemaMismatch {
         column: String,
-        existing_column_type: String,
-        inserted_value_type: String,
+        source: ColumnError,
     },
 
     #[snafu(display("Database {} doesn't exist", database))]
@@ -838,7 +836,7 @@ impl Table {
     ) -> Result<()> {
         let row_count = self.row_count();
 
-        // insert new columns and validate existing ones
+        // insert new columns
         for col_val in values {
             let column = match self.columns.get(col_val.column) {
                 Some(col) => col,
@@ -876,25 +874,28 @@ impl Table {
                     self.columns.get(col_val.column).expect("just inserted column")
                 }
             };
-
-            ensure!(
-                column.matches_type(&col_val),
-                SchemaMismatch {
-                    column: col_val.column,
-                    existing_column_type: column.type_description(),
-                    inserted_value_type: col_val.value.type_description(),
-                }
-            );
         }
 
+        // send the values to the WAL
+
+
         // insert the actual values
+        self.add_row_unchecked(row_count, values)?;
+
+        Ok(())
+    }
+
+    /// Shared by insert and WAL restore. Errors if the column doesn't exist instead of creating
+    /// one, unlike add_row.
+    fn add_row_unchecked(&mut self, row_count: usize, values: &[ColumnValue<'_>]) -> Result<()> {
         for col_val in values {
             let column = self.columns
                 .get_mut(col_val.column)
-                .expect("ensured existence of column in previous loop");
+                .context(InternalColumnNotFound { column: col_val.column })?;
 
-            // builder????
-            column.push(&col_val.value).expect("ensured schema match in previous loop");
+            column.push(&col_val.value).context(SchemaMismatch {
+                        column: col_val.column
+                        })?;
         }
 
         // make sure all the columns are of the same length
@@ -1144,7 +1145,7 @@ impl WalEntryBuilder<'_> {
 }
 
 #[derive(Debug, Snafu)]
-enum ColumnError {
+pub enum ColumnError {
     #[snafu(display("Types did not match. Expected: {}, got: {}", expected, got))]
     TypeMismatch {
         expected: String,
