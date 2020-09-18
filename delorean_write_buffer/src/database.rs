@@ -796,6 +796,11 @@ impl Table {
             }
         }
 
+        // make sure all the columns are of the same length
+        for (_, col) in &mut self.columns {
+            col.push_none_if_len_equal(row_count);
+        }
+
         Ok(())
     }
 
@@ -865,6 +870,7 @@ impl Table {
                 .get_mut(col_val.column)
                 .expect("ensured existence of column in previous loop");
 
+            // builder????
             column.push(&col_val.value).expect("ensured schema match in previous loop");
         }
 
