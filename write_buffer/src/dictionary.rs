@@ -32,6 +32,16 @@ impl Dictionary {
         Self(StringInterner::new())
     }
 
+    /// Returns the number of items in this dictionary
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns true if the underlying dictionary is empty
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns the id corresponding to value, adding an entry for the
     /// id if it is not yet present in the dictionary.
     pub fn lookup_value_or_insert(&mut self, value: &str) -> u32 {

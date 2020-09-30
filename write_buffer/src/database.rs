@@ -1103,6 +1103,7 @@ mod tests {
 
     use arrow::{
         array::{Array, StringArray},
+        compute::cast,
         datatypes::DataType,
         util::pretty::pretty_format_batches,
     };
@@ -1229,7 +1230,11 @@ mod tests {
             columns
         );
 
-        let region_col = columns[0]
+        // cast that bad boy to a string column (it is a string dictionary)
+        let cast_region =
+            cast(&columns[0], &DataType::Utf8).expect("Casting region column to Utf8");
+
+        let region_col = cast_region
             .as_any()
             .downcast_ref::<StringArray>()
             .expect("Get region column as a string");
@@ -1240,7 +1245,10 @@ mod tests {
         assert!(region_col.is_null(1), "is_null(1): {:?}", region_col);
         assert!(region_col.is_null(2), "is_null(1): {:?}", region_col);
 
-        let host_col = columns[1]
+        // cast that bad boy to a string column (it is a string dictionary)
+        let cast_host = cast(&columns[1], &DataType::Utf8).expect("Casting host column to Utf8");
+
+        let host_col = cast_host
             .as_any()
             .downcast_ref::<StringArray>()
             .expect("Get host column as a string");
