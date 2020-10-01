@@ -856,6 +856,7 @@ dependencies = [
  "croaring",
  "delorean_arrow",
  "delorean_table",
+ "rand",
 ]
 
 [[package]]
