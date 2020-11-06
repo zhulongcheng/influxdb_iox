@@ -99,14 +99,12 @@ impl IOxExecutionContext {
     }
 
     pub async fn make_plan(&self, plan: &LogicalPlan) -> Result<Arc<dyn ExecutionPlan>> {
-        debug!("Running plan, input\n----\n{}\n----", dump_plan(plan));
+        debug!("Preparing to run plan. Input: \n----\n{}\n----", dump_plan(plan));
 
-        // TODO the datafusion optimizer was removing filters..
-        //let logical_plan = ctx.optimize(&plan).context(DataFusionOptimization)?;
-        let logical_plan = plan;
+        let logical_plan = self.inner.optimize(&plan)?;
         debug!(
-            "Running optimized plan\n----\n{}\n----",
-            dump_plan(logical_plan)
+            "Preparing to run plan. Optimized:\n----\n{}\n----",
+            dump_plan(&logical_plan)
         );
 
         self.inner.create_physical_plan(&logical_plan)
