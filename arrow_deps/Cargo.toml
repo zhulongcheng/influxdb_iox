@@ -13,8 +13,8 @@ description = "Apache Arrow / Parquet / DataFusion dependencies for InfluxDB IOx
 
 # The version can be found here: https://github.com/apache/arrow/commit/e7ce8cfda3a612cd54fa47d06e26ca07b83a7cd6
 #
-arrow = { git = "https://github.com/apache/arrow.git", rev = "e7ce8cfda3a612cd54fa47d06e26ca07b83a7cd6" , features = ["simd"] }
-datafusion = { git = "https://github.com/apache/arrow.git", rev = "e7ce8cfda3a612cd54fa47d06e26ca07b83a7cd6" }
+arrow = { path = "../../arrow/rust/arrow" , features = ["simd"] }
+datafusion = { path = "../../arrow/rust/datafusion" }
 # Turn off the "arrow" feature; it currently has a bug that causes the crate to rebuild every time
 # and we're not currently using it anyway
-parquet = { git = "https://github.com/apache/arrow.git", rev = "e7ce8cfda3a612cd54fa47d06e26ca07b83a7cd6", default-features = false, features = ["snap", "brotli", "flate2", "lz4", "zstd"] }
+parquet = { path = "../../arrow/rust/parquet", default-features = false, features = ["snap", "brotli", "flate2", "lz4", "zstd"] }
