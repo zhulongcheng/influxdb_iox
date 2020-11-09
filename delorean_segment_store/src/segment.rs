@@ -37,21 +37,14 @@ impl Schema {
 pub struct Segment<'a> {
     meta: MetaData<'a>,
 
-    all_columns: BTreeMap<ColumnName<'a>, &'a Column>,
-
-    tag_columns: Vec<&'a Column>,
-    field_columns: Vec<&'a Column>,
-    time_column: &'a Column,
+    all_columns: BTreeMap<ColumnName<'a>, Column>,
 }
 
 impl<'a> Segment<'a> {
-    pub fn new(rows: u32, columns: BTreeMap<ColumnName<'a>, &'a ColumnType>) -> Self {
+    pub fn new(rows: u32, columns: BTreeMap<ColumnName<'a>, ColumnType>) -> Self {
         let mut meta = MetaData::default();
         meta.rows = rows;
 
-        let mut tag_columns: Vec<&'a Column> = vec![];
-        let mut field_columns: Vec<&'a Column> = vec![];
-        let mut time_column: Option<&'a Column> = None;
         let mut all_columns = BTreeMap::new();
 
         for (name, ct) in columns {
@@ -61,57 +54,37 @@ impl<'a> Segment<'a> {
                 ColumnType::Tag(c) => {
                     assert_eq!(c.num_rows(), rows);
 
-                    tag_columns.push(&c);
-
-                    if let Some(range) = tag_columns.last().unwrap().column_range() {
-                        meta.column_ranges.insert(name, range);
-                    }
+                    let range = c.column_range().unwrap();
+                    meta.column_ranges.insert(name, range);
                     all_columns.insert(name, c);
                 }
                 ColumnType::Field(c) => {
                     assert_eq!(c.num_rows(), rows);
 
-                    field_columns.push(&c);
-
-                    if let Some(range) = c.column_range() {
-                        meta.column_ranges.insert(name, range);
-                    }
+                    let range = c.column_range().unwrap();
+                    meta.column_ranges.insert(name, range);
                     all_columns.insert(name, c);
                 }
                 ColumnType::Time(c) => {
                     assert_eq!(c.num_rows(), rows);
 
-                    let range = c.column_range();
-                    meta.time_range = match range {
-                        None => panic!("time column must have non-null value"),
-                        Some((
-                            Value::Scalar(Scalar::I64(min)),
-                            Value::Scalar(Scalar::I64(max)),
-                        )) => (min, max),
-                        Some((_, _)) => unreachable!("unexpected types for time range"),
-                    };
+                    let range = c.column_range().unwrap().clone();
+                    // meta.time_range = match range {
+                    //     None => panic!("time column must have non-null value"),
+                    //     Some((
+                    //         Value::Scalar(Scalar::I64(min)),
+                    //         Value::Scalar(Scalar::I64(max)),
+                    //     )) => (min, max),
+                    //     Some((_, _)) => unreachable!("unexpected types for time range"),
+                    // };
 
-                    meta.column_ranges.insert(name, range.unwrap());
-                    match time_column {
-                        Some(_) => panic!("multiple time columns unsupported"),
-                        None => {
-                            // probably not a firm requirement....
-                            assert_eq!(name, TIME_COLUMN_NAME);
-                            time_column = Some(&c);
-                        }
-                    }
+                    meta.column_ranges.insert(name, range);
                     all_columns.insert(name, c);
                 }
             }
         }
 
-        Self {
-            meta,
-            all_columns,
-            tag_columns,
-            field_columns,
-            time_column: time_column.unwrap(),
-        }
+        Self { meta, all_columns }
     }
 
     /// The total size in bytes of the segment
@@ -220,7 +193,8 @@ impl<'a> Segment<'a> {
             .collect::<Vec<_>>();
         assert!(time_predicates.len() == 2);
 
-        let time_row_ids = self.time_column.row_ids_filter_range(
+        let time_column = self.all_columns.get(TIME_COLUMN_NAME).unwrap();
+        let time_row_ids = time_column.row_ids_filter_range(
             &time_predicates[0].1, // min time
             &time_predicates[1].1, // max time
             dst,
